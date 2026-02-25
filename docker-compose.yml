@@ -1,0 +1,13 @@
+services:
+  server:
+    build:
+      context: ./server
+    image: prompt-relay:latest
+    container_name: prompt-relay
+    env_file: ./server/.env
+    volumes:
+      - ./server/certs:/app/certs
+    ports:
+      - "3939:3939"
+      - "3940:3940"
+    restart: unless-stopped

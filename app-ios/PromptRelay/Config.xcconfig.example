@@ -1,0 +1,23 @@
+// =============================================================================
+// Config.xcconfig — Xcode ビルド設定テンプレート
+// =============================================================================
+//
+// 使い方:
+//   1. このファイルを同じディレクトリに Config.xcconfig としてコピー
+//      cp Config.xcconfig.example Config.xcconfig
+//   2. 各値を自分の Apple Developer アカウント情報に書き換え
+//   3. Config.xcconfig は .gitignore 済みなのでコミットされません
+//
+// =============================================================================
+
+// [必須] Apple Developer Team ID
+// Apple Developer Portal → Membership → Team ID で確認できる 10 桁の英数字
+// 例: A1B2C3D4E5
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// [必須] Bundle ID のプレフィックス
+// メインアプリは $(BUNDLE_ID_PREFIX)、
+// NotificationService Extension は $(BUNDLE_ID_PREFIX).NotificationService になる
+// サーバ側 .env の APNS_BUNDLE_ID と一致させること
+// 例: com.example.prompt-relay
+BUNDLE_ID_PREFIX = com.example.prompt-relay

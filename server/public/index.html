@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Prompt Relay</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <img src="icon-192.png" alt="">
+    <h1>Prompt Relay</h1>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="requests">リクエスト</button>
+    <button class="tab" data-tab="settings">設定</button>
+  </div>
+
+  <main>
+    <!-- リクエスト一覧パネル -->
+    <div id="panel-requests" class="panel active">
+      <div id="request-list"></div>
+      <div id="empty-state" class="empty">
+        リクエストはありません<br>
+        Claude Code の権限プロンプトを待機中…
+      </div>
+    </div>
+
+    <!-- 設定パネル -->
+    <div id="panel-settings" class="panel">
+
+      <!-- ステータス -->
+      <div class="setting-group">
+        <h3>ステータス</h3>
+        <div class="setting-row">
+          <label>接続</label>
+          <span id="polling-status"><span class="status-indicator off"></span>停止中</span>
+        </div>
+      </div>
+
+      <!-- 接続設定 -->
+      <div class="setting-group">
+        <h3>接続設定</h3>
+        <input id="input-server" class="setting-input" type="url" placeholder="サーバ URL (空欄 = 現在のサーバ)">
+        <input id="input-apikey" class="setting-input" type="password" placeholder="API Key (8〜128文字)" minlength="8" maxlength="128">
+        <div id="apikey-error" class="error-text" style="display:none"></div>
+        <div class="setting-row">
+          <label>接続</label>
+          <div class="toggle">
+            <input type="checkbox" id="toggle-connect" checked>
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+        <div id="connect-error" class="error-text" style="display:none"></div>
+      </div>
+
+      <!-- HTTPS セットアップ -->
+      <div id="lan-setup" class="setting-group" style="display:none">
+        <h3>HTTPS セットアップ</h3>
+        <p class="setup-text">プッシュ通知や PWA インストールには HTTPS が必要です。</p>
+        <p class="setup-step">1. CA 証明書をインストール:</p>
+        <a id="link-ca" class="setting-btn secondary" href="#" download="PromptRelay-CA.pem">PromptRelay-CA.pem をダウンロード</a>
+        <p class="setup-hint">→ 設定 → セキュリティ → 証明書のインストール → CA 証明書</p>
+        <p class="setup-step">2. HTTPS でアクセス:</p>
+        <a id="link-https" class="setting-btn primary" href="#">HTTPS で開く</a>
+      </div>
+
+      <!-- 動作設定 -->
+      <div class="setting-group">
+        <h3>動作設定</h3>
+        <div class="setting-row">
+          <div>
+            <label>通知</label>
+            <p class="setting-desc">オンにすると承認要求をブラウザ通知バーにリアルタイム表示します（HTTPS 必須）。</p>
+          </div>
+          <div class="toggle">
+            <input type="checkbox" id="toggle-push">
+            <span class="toggle-slider"></span>
+          </div>
+        </div>
+        <div id="push-status" class="push-status"></div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

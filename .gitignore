@@ -1,0 +1,34 @@
+node_modules/
+__pycache__/
+.pytest_cache/
+.env
+*.p8
+server/certs/*.p8
+server/certs/*.pem
+dist/
+.DS_Store
+app-ios/PromptRelay/PromptRelay.xcodeproj/xcuserdata/
+app-ios/PromptRelay/PromptRelay.xcodeproj/project.xcworkspace/xcuserdata/
+app-ios/PromptRelay/PromptRelay/Config.swift
+app-ios/PromptRelay/Config.xcconfig
+.vscode/
+
+# ESP32 (ESP-IDF)
+server-esp32/build/
+server-esp32/managed_components/
+server-esp32/dependencies.lock
+server-esp32/sdkconfig
+server-esp32/sdkconfig.old
+server-esp32/.cache/
+
+# Android
+app-android/.gradle/
+app-android/build/
+app-android/app/build/
+app-android/local.properties
+app-android/.idea/
+app-android/app/release/
+app-android/gradle/wrapper/gradle-wrapper.jar
+
+# Test scripts
+test*.sh

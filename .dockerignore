@@ -1,0 +1,9 @@
+app-ios/
+app-android/
+server-esp32/
+docs/
+.git/
+*.md
+LICENSE
+setup.sh
+docker-compose.yml

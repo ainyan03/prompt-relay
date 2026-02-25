@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Prompt Relay</string>
+    <string name="tab_requests">リクエスト</string>
+    <string name="tab_settings">設定</string>
+    <string name="no_requests">リクエストなし</string>
+    <string name="section_pending">承認待ち</string>
+    <string name="section_history">履歴</string>
+    <string name="server_url">サーバ URL</string>
+    <string name="api_key">API Key</string>
+    <string name="save">保存</string>
+    <string name="reconnect">再接続</string>
+    <string name="status_connected">接続済み</string>
+    <string name="status_connecting">接続中…</string>
+    <string name="status_disconnected">未接続</string>
+    <string name="status_error">エラー</string>
+    <string name="action_approve">Approve</string>
+    <string name="action_deny">Deny</string>
+    <string name="responded_on_other">別端末で回答済み</string>
+    <string name="timed_out">タイムアウト</string>
+    <string name="notification_channel_service">接続状態</string>
+    <string name="notification_channel_requests">承認要求</string>
+    <string name="notification_service_title">Prompt Relay</string>
+    <string name="notification_service_connected">サーバに接続中</string>
+    <string name="notification_service_reconnecting">再接続中…</string>
+</resources>
