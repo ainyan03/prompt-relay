@@ -4,7 +4,7 @@
 SERVER_URL="${PROMPT_RELAY_SERVER_URL:-http://localhost:3939}" # プライマリサーバのURL
 API_KEY="${PROMPT_RELAY_API_KEY:-}"                          # Bearer トークン認証用（ルームキー、8〜128文字）
 
-# API Key バリデーション
+# ルームキーバリデーション
 if [ -z "$API_KEY" ]; then
   echo "[prompt-relay] ERROR: PROMPT_RELAY_API_KEY が未設定です" >&2
   exit 0

@@ -9,14 +9,26 @@
 #   2. フック本体は stdin を読み取り、バックグラウンドサブシェルを起動して即 exit 0
 #   3. バックグラウンドで tmux ペインをポーリングし、権限プロンプトの
 #      出現を検出する（末尾から逆順に番号降順パターンを探索）
-#   4. 検出後、排他ロックを取得してからサーバへ送信、応答をポーリングして tmux へ転送
-#   5. 応答送信後、ロックを解放し、再びフェーズ1に戻り次の連続プロンプトを検出する
+#   4. 検出後、サーバへ送信し、応答をポーリングして tmux へ転送
+#   5. 応答送信後、再びフェーズ1に戻り次の連続プロンプトを検出する
 #
-# ロック戦略:
-#   プロンプト検出（フェーズ1）はロック不要 — 読み取り専用のため並行実行可能。
-#   プロンプトが見つかった場合にのみロックを取得し、処理を排他的に実行する。
-#   これにより、プロンプトが表示されない大多数のケース（自動承認ツール等）では
-#   ロック競合が発生せず、連続する PreToolUse フックの同時実行を妨げない。
+# 排他戦略（PID 後勝ち方式、ロックなし）:
+#   2つの独立した PID ファイルで排他制御を行い、いずれも後発が先行を置き換える。
+#
+#   WATCHER_FILE — フェーズ1（検出）+ フェーズ2（パース＋サーバ送信）を排他
+#     各フックは起動時に自身の PID を書き込む。検出ループの各イテレーションで
+#     PID を確認し、新しいフックに上書きされていたら即座に終了する。
+#     万一フェーズ2で重複送信が発生しても、サーバの cancelPendingByTarget が
+#     旧リクエストをキャンセルするため実害はない。
+#
+#   POLLER_FILE — フェーズ3（応答ポーリング）を排他
+#     サーバ送信成功後に自身の PID を書き込む。ポーリング各イテレーションで
+#     PID を確認し、新しいリクエストに上書きされていたら退く。
+#     サーバ側でも cancelPendingByTarget が旧リクエストをキャンセルするため
+#     二重の安全策となる。
+#
+#   この方式により、フェーズ2（数百ms）の間だけ排他が効き、
+#   フェーズ3（最大120秒）は新しいフックの処理をブロックしない。
 #
 # 重要: バックグラウンドサブシェルの stdin/stdout/stderr は /dev/null にリダイレクト
 #        する必要がある。これを怠ると、Claude Code がパイプの EOF を待ち続けて
@@ -33,7 +45,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
-TIMEOUT=120
+TIMEOUT="${PROMPT_RELAY_TIMEOUT:-120}"
 POLL_INTERVAL=1
 
 # 現在の tmux ペインを取得
@@ -50,42 +62,29 @@ INPUT=$(cat)
 
 # バックグラウンドで全処理を実行（PreToolUse を即座に返すため）
 (
-  # --- ロック管理 & プロセス間重複防止 ---
-  LOCK_DIR="/tmp/prompt-relay-${TMUX_TARGET//[:.]/_}.lock"
-  SKIP_FILE="/tmp/prompt-relay-${TMUX_TARGET//[:.]/_}.skip"
-  LOCK_HELD=false
+  # --- PID ファイル & 重複防止 ---
+  _SAFE_TARGET="${TMUX_TARGET//[:.]/_}"
+  WATCHER_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.watcher"
+  POLLER_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.poller"
+  SKIP_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.skip"
+
+  _MY_PID=$(sh -c 'echo $PPID')
 
   cleanup() {
-    [ "$LOCK_HELD" = "true" ] && rmdir "$LOCK_DIR" 2>/dev/null
+    # 自分の PID の場合のみ削除（他プロセスのファイルを消さない）
+    [ "$(cat "$WATCHER_FILE" 2>/dev/null)" = "$_MY_PID" ] && rm -f "$WATCHER_FILE"
+    [ "$(cat "$POLLER_FILE" 2>/dev/null)" = "$_MY_PID" ] && rm -f "$POLLER_FILE"
   }
   trap cleanup EXIT
 
-  acquire_lock() {
-    # 古いロックの除去（フック最大寿命 120s を大きく超えている場合は確実に stale）
-    if [ -d "$LOCK_DIR" ]; then
-      local _age=$(( $(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0) ))
-      [ $_age -gt 300 ] && rmdir "$LOCK_DIR" 2>/dev/null
-    fi
-    # リトライ（最大 2 秒待機: 先行フックの処理完了を待つ）
-    local _try
-    for _try in 1 2 3 4 5 6 7 8 9 10; do
-      if mkdir "$LOCK_DIR" 2>/dev/null; then
-        LOCK_HELD=true
-        return 0
-      fi
-      sleep 0.2
-    done
-    return 1
-  }
-
-  release_lock() {
-    rmdir "$LOCK_DIR" 2>/dev/null
-    LOCK_HELD=false
-  }
+  # --- ウォッチャー登録（PID 後勝ち方式）---
+  # 自身の PID を書き込み、検出ループの各イテレーションで確認する。
+  # 新しいフックが PID を上書きしたら、古いフックは次のチェックで退く。
+  echo "$_MY_PID" > "$WATCHER_FILE"
 
   PARSER="${SCRIPT_DIR}/prompt_parser.py"
 
-  # --- プロンプト検出関数（ロック不要、読み取り専用）---
+  # --- プロンプト検出関数 ---
   # ロジックの詳細は prompt_parser.py の detect_prompt() を参照
   detect_prompt() {
     /usr/bin/env python3 "$PARSER" detect "$1" 2>/dev/null
@@ -122,15 +121,18 @@ INPUT=$(cat)
   }
 
   # --- メインループ ---
-  ELAPSED=0
+  DEADLINE_EPOCH=$(( $(date +%s) + TIMEOUT ))
   PREV_DETECTED_RAW=""  # 前回処理済みペイン内容（同一内容の再処理防止用）
 
-  while [ $ELAPSED -lt $TIMEOUT ]; do
+  while [ $(date +%s) -lt $DEADLINE_EPOCH ]; do
 
-    # --- フェーズ1: プロンプト出現を待機（ロック不要）---
+    # === フェーズ1: プロンプト出現を待機（ウォッチャー排他） ===
     # 可視領域のみ対象とし、スクロールバック内の古いプロンプトとの誤検出を防ぐ。
     PANE_CONTENT=""
     for _i in $(seq 1 $DETECT_ATTEMPTS); do
+      # ウォッチャーチェック: 新しいフックに置き換えられていたら即終了
+      [ "$(cat "$WATCHER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
+
       sleep $DETECT_INTERVAL
       _RAW=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
 
@@ -152,37 +154,25 @@ INPUT=$(cat)
       fi
     done
 
-    # プロンプト未検出 → これ以上の連続プロンプトはない、終了
+    # プロンプト未検出 → 終了
     [ -z "$PANE_CONTENT" ] && break
 
-    # --- プロンプト検出 → 排他ロック取得 ---
-    # 別のフックが既に処理中の場合はリトライ後に諦めて終了
-    if ! acquire_lock; then
-      break
-    fi
+    # === フェーズ2: パース＋サーバ送信（ロック不要、ウォッチャー排他で十分） ===
 
-    # ロック取得中に別プロセスが処理済みなら再処理しない
-    if [ -f "$SKIP_FILE" ] && [ "$(cat "$SKIP_FILE" 2>/dev/null)" = "$_RAW" ]; then
-      release_lock
-      break
-    fi
-
-    # ロック取得中にプロンプトが処理された可能性があるので再確認
+    # プロンプトが処理された可能性があるので再確認
     _RAW_RECHECK=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
     if [ "$(detect_prompt "$_RAW_RECHECK")" != "yes" ]; then
-      release_lock
       break
     fi
-    # 再取得（ロック取得中にペイン内容が変わっている可能性）
+    # 再取得（フェーズ1からの間にペイン内容が変わっている可能性）
     PANE_CONTENT=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -50 2>/dev/null)
 
-    # --- フェーズ2: ペイン内容をパースしてサーバ送信用 JSON を構築 ---
+    # ペイン内容をパースしてサーバ送信用 JSON を構築
     # ロジックの詳細は prompt_parser.py の parse_pane() を参照
-    PAYLOAD=$(/usr/bin/env python3 "$PARSER" parse "$INPUT" "$PANE_CONTENT" "$TMUX_TARGET_ID" "${DISPLAY_HOST}" 2>/dev/null)
+    PAYLOAD=$(/usr/bin/env python3 "$PARSER" parse "$INPUT" "$PANE_CONTENT" "$TMUX_TARGET_ID" "${DISPLAY_HOST}" "$TIMEOUT" 2>/dev/null)
 
     if [ -z "$PAYLOAD" ]; then
       notify_fallback "パース失敗: 手動で確認してください"
-      release_lock
       break
     fi
 
@@ -199,20 +189,23 @@ INPUT=$(cat)
 
     if [ $CURL_EXIT -ne 0 ] || [ -z "$RESPONSE_WITH_STATUS" ]; then
       notify_fallback "サーバ接続失敗"
-      release_lock
       break
     fi
 
     if [ "$HTTP_STATUS" = "503" ] || [ "$HTTP_STATUS" = "401" ]; then
-      release_lock
       break
     fi
 
     REQUEST_ID=$(/usr/bin/env python3 -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$RESPONSE" 2>/dev/null)
+    # サーバが返した expires_at（エポックミリ秒）をポーリング期限に使用
+    # ESP32 版はブート相対時刻を返すため、妥当なエポック値（2020年以降）のみ採用
+    EXPIRES_AT=$(/usr/bin/env python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('expires_at',''))" "$RESPONSE" 2>/dev/null)
+    if [ -n "$EXPIRES_AT" ] && [ "$EXPIRES_AT" != "" ] && [ "$EXPIRES_AT" -gt 1577836800000 ] 2>/dev/null; then
+      DEADLINE_EPOCH=$((EXPIRES_AT / 1000))
+    fi
 
     if [ -z "$REQUEST_ID" ] || [ "$REQUEST_ID" = "null" ]; then
       notify_fallback "サーバ応答異常"
-      release_lock
       break
     fi
 
@@ -225,10 +218,24 @@ INPUT=$(cat)
       REQUEST_ID_2=$(/usr/bin/env python3 -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$RESPONSE_2" 2>/dev/null)
     fi
 
-    # --- フェーズ3: サーバの応答をポーリングし、tmux にキー送信 ---
+    # 送信成功 → 重複検出防止用に記録
+    PREV_DETECTED_RAW="$_RAW"
+    echo "$_RAW" > "$SKIP_FILE"
+
+    # === フェーズ3: 応答ポーリング（ポーラー排他） ===
+    # ポーラー登録: 新しいリクエストが来たら古いポーラーは退く
+    echo "$_MY_PID" > "$POLLER_FILE"
+
     ANSWERED=false
     SEEN_PROMPT=true  # フェーズ1で確認済み
-    while [ $ELAPSED -lt $TIMEOUT ]; do
+    while [ $(date +%s) -lt $DEADLINE_EPOCH ]; do
+      # ポーラーチェック: 新しいリクエストに置き換えられていたら退く
+      # （サーバ側でも cancelPendingByTarget が旧リクエストをキャンセルしている）
+      [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && {
+        ANSWERED=true  # 新しいフックが引き継ぐので、外側ループは継続扱い
+        break
+      }
+
       # まずプライマリサーバの応答を確認
       RESULT=$(curl -s --connect-timeout 3 "${CURL_AUTH[@]}" "${SERVER_URL}/permission-request/${REQUEST_ID}/response" 2>/dev/null)
       PARSED=$(parse_response "$RESULT")
@@ -252,8 +259,7 @@ INPUT=$(cat)
 
       # キャンセル/期限切れなら終了
       if [ "$STATUS" = "stale" ]; then
-        release_lock
-        break 2
+        break
       fi
 
       # 応答あり + send_key あり → tmux にキー送信
@@ -292,20 +298,17 @@ INPUT=$(cat)
       fi
 
       sleep $POLL_INTERVAL
-      ELAPSED=$((ELAPSED + POLL_INTERVAL))
     done
-
-    # 処理済みペイン内容を記録（同一内容の再処理防止）
-    PREV_DETECTED_RAW="$_RAW"        # 同一プロセス内用
-    echo "$_RAW" > "$SKIP_FILE"      # 別プロセス間共有用
-
-    # ロック解放（連続プロンプトの次回検出を別フックにも許可）
-    release_lock
 
     # 応答なし（タイムアウト等）→ 連続プロンプトの試行を中断
     [ "$ANSWERED" = "false" ] && break
 
   done
+
+  # タイムアウト時: 未応答リクエストをキャンセルして通知を消去
+  if [ -n "$REQUEST_ID" ] && [ "$REQUEST_ID" != "null" ] && [ "$ANSWERED" != "true" ]; then
+    cancel_all >/dev/null 2>&1
+  fi
 ) </dev/null >/dev/null 2>&1 &
 
 exit 0

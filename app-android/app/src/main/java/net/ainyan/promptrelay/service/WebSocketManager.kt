@@ -21,6 +21,7 @@ import okhttp3.WebSocketListener
 import java.net.ConnectException
 import java.net.UnknownHostException
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLException
 
 class WebSocketManager(private val scope: CoroutineScope) {
 
@@ -136,12 +137,21 @@ class WebSocketManager(private val scope: CoroutineScope) {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!isCurrent()) return
                 Log.e(TAG, "WebSocket failure", t)
-                if (t is UnknownHostException || t is ConnectException) {
-                    _connectionState.value = ConnectionState.Error("設定エラー: URLを確認してください")
-                    shouldReconnect = false
-                } else {
-                    _connectionState.value = ConnectionState.Disconnected
-                    scheduleReconnect()
+                when {
+                    t is UnknownHostException || t is ConnectException -> {
+                        _connectionState.value = ConnectionState.Error("設定エラー: URLを確認してください")
+                        shouldReconnect = false
+                    }
+                    t is SSLException || t.cause is SSLException -> {
+                        val detail = (t.cause ?: t).message?.take(100) ?: "不明"
+                        _connectionState.value = ConnectionState.Error("証明書エラー: $detail")
+                        shouldReconnect = false
+                    }
+                    else -> {
+                        val detail = t.message?.take(100) ?: t.javaClass.simpleName
+                        _connectionState.value = ConnectionState.Error("接続失敗: $detail")
+                        scheduleReconnect()
+                    }
                 }
             }
         })

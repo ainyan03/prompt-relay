@@ -43,9 +43,9 @@ fun SettingsScreen(
     val (statusText, statusColor) = when (connectionState) {
         is WebSocketManager.ConnectionState.Connected -> "接続済み" to Success
         is WebSocketManager.ConnectionState.Connecting -> "接続中…" to Warning
-        is WebSocketManager.ConnectionState.Disconnected -> "未接続" to Danger
+        is WebSocketManager.ConnectionState.Disconnected -> "未接続" to TextDim
         is WebSocketManager.ConnectionState.Error ->
-            "エラー: ${(connectionState as WebSocketManager.ConnectionState.Error).message}" to Danger
+            (connectionState as WebSocketManager.ConnectionState.Error).message to Danger
     }
 
     Column(
@@ -88,9 +88,9 @@ fun SettingsScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         val apiKeyError = when {
-            editApiKey.isEmpty() -> "API Key を入力してください"
-            editApiKey.length < 8 -> "API Key は 8 文字以上で入力してください (${editApiKey.length}文字)"
-            editApiKey.length > 128 -> "API Key は 128 文字以下で入力してください"
+            editApiKey.isEmpty() -> "ルームキーを入力してください"
+            editApiKey.length < 8 -> "ルームキーは 8 文字以上で入力してください (${editApiKey.length}文字)"
+            editApiKey.length > 128 -> "ルームキーは 128 文字以下で入力してください"
             else -> null
         }
 
@@ -98,8 +98,8 @@ fun SettingsScreen(
             value = editApiKey,
             onValueChange = viewModel::onApiKeyChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("API Key (8〜128文字)") },
-            placeholder = { Text("API Key") },
+            label = { Text("ルームキー (8〜128文字)") },
+            placeholder = { Text("ルームキー") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             isError = apiKeyError != null

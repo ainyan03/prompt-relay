@@ -18,12 +18,21 @@ class NotificationService: UNNotificationServiceExtension {
 
         let userInfo = content.userInfo
 
-        // choices から PERMISSION_REQUEST カテゴリのアクションを更新する。
-        // categoryIdentifier は変更せず PERMISSION_REQUEST のまま維持する。
-        // Watch は PERMISSION_REQUEST を起動時から知っているのでボタンは必ず出る。
-        // アクション更新が間に合えば正しいテキスト、間に合わなければ静的フォールバック。
+        // 古い permission_request 通知を削除（新しい通知が最新のプロンプトなので古いものは不要）
+        if userInfo["type"] as? String == "permission_request" {
+            removeOldPermissionNotifications(
+                currentRequestId: userInfo["request_id"] as? String,
+                tmuxTarget: userInfo["tmux_target"] as? String
+            )
+        }
+
+        // choices からリクエスト固有カテゴリを生成する。
+        // カテゴリ識別子に request_id を含めることで、各通知が独自のボタンを保持する。
+        // 古い通知を展開しても新しいリクエストのボタンに上書きされることがなくなる。
+        // Watch は NSE を実行しないため PERMISSION_REQUEST（静的フォールバック）がそのまま使われる。
         guard let choicesData = userInfo["choices"] as? [[String: Any]],
-              !choicesData.isEmpty else {
+              !choicesData.isEmpty,
+              let requestId = userInfo["request_id"] as? String else {
             contentHandler(content)
             return
         }
@@ -50,18 +59,24 @@ class NotificationService: UNNotificationServiceExtension {
             return
         }
 
-        // PERMISSION_REQUEST カテゴリ自体のアクションを更新（識別子は変更しない）
-        let updatedCategory = UNNotificationCategory(
-            identifier: "PERMISSION_REQUEST",
+        // リクエスト固有カテゴリを作成（PERM_{request_id}）
+        let categoryId = "PERM_\(requestId)"
+        let requestCategory = UNNotificationCategory(
+            identifier: categoryId,
             actions: actions,
             intentIdentifiers: [],
             options: []
         )
 
+        // カテゴリ識別子を差し替え（サーバからは PERMISSION_REQUEST で送られてくる）
+        content.categoryIdentifier = categoryId
+
         UNUserNotificationCenter.current().getNotificationCategories { existingCategories in
             var categories = existingCategories
-            categories = categories.filter { $0.identifier != "PERMISSION_REQUEST" }
-            categories.insert(updatedCategory)
+            // PERMISSION_REQUEST（フォールバック）は維持しつつ、固有カテゴリを追加
+            // 古いリクエスト固有カテゴリが溜まるのを防ぐため、PERM_ プレフィックスの古いものを除去
+            categories = categories.filter { !$0.identifier.hasPrefix("PERM_") || $0.identifier == categoryId }
+            categories.insert(requestCategory)
             UNUserNotificationCenter.current().setNotificationCategories(categories)
 
             contentHandler(content)
@@ -71,6 +86,32 @@ class NotificationService: UNNotificationServiceExtension {
     override func serviceExtensionTimeWillExpire() {
         if let contentHandler = contentHandler, let content = bestAttemptContent {
             contentHandler(content)
+        }
+    }
+
+    // MARK: - 古い通知の削除
+
+    private func removeOldPermissionNotifications(currentRequestId: String?, tmuxTarget: String?) {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { notifications in
+            let idsToRemove = notifications
+                .filter { notification in
+                    let info = notification.request.content.userInfo
+                    guard info["type"] as? String == "permission_request" else { return false }
+                    // 今回の通知自体は残す
+                    if let currentId = currentRequestId,
+                       info["request_id"] as? String == currentId { return false }
+                    // tmux_target が指定されている場合、同一ペインの通知のみ対象
+                    if let target = tmuxTarget {
+                        return info["tmux_target"] as? String == target
+                    }
+                    return true
+                }
+                .map { $0.request.identifier }
+
+            if !idsToRemove.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: idsToRemove)
+            }
         }
     }
 

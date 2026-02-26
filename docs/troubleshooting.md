@@ -161,7 +161,7 @@ source ~/.zshrc
 
 **症状**: アプリで承認ボタンを押したが、ターミナルにキーが入力されない。アプリに「already responded」エラーが表示される
 
-**原因**: 権限リクエストは作成から 120 秒でタイムアウトする。フックスクリプトのポーリングも 120 秒で終了するため、それ以降はサーバから応答を受け取っても `tmux send-keys` を実行するプロセスが存在しない
+**原因**: 権限リクエストは作成から `REQUEST_TIMEOUT` 秒（デフォルト 120）でタイムアウトする。フックスクリプトのポーリングも `PROMPT_RELAY_TIMEOUT`（デフォルト 120）秒で終了するため、それ以降はサーバから応答を受け取っても `tmux send-keys` を実行するプロセスが存在しない
 
 **対処法**: ターミナルで手動操作する。タイムアウト後のリクエストはアプリ側では操作不可。Claude Code のターミナル上で直接選択肢を選ぶ。
 
@@ -205,10 +205,10 @@ Claude Code を再起動すれば、フックが正しいペインを取得し�
 
 **症状**: Apple Watch の通知から承認・拒否を選択したが、ターミナルに反映されない。新しい通知からは正常に操作できる
 
-**原因**: 通知の取り違え防止機構が正常に動作している。サーバは APNs collapse-id に毎回ユニークな値を使用するため、各通知が独立した request_id を保持する。古い通知のボタンを押すと、キャンセル済みのリクエストに対して応答が送信され、サーバが `404` で拒否する
+**原因**: 通知の取り違え防止機構が正常に動作している。サーバは APNs collapse-id を2スロット交互方式で使用し、iPhone の NSE（Notification Service Extension）はリクエスト固有のカテゴリ（`PERM_{id}`）を生成する。古い通知のボタンを押すと、キャンセル済みのリクエストに対して応答が送信され、サーバが `404` で拒否する
 
 **対処法**:
-- 新しい通知から回答する（正常な動作であり、異なるプロンプトへの誤回答を防いでいる）
+- 最新の通知から回答する（正常な動作であり、異なるプロンプトへの誤回答を防いでいる）
 - ターミナルで直接操作する
 
 ---
@@ -244,6 +244,14 @@ Claude Code を再起動すれば、フックが正しいペインを取得し�
 2. 設定 → 一般 → VPN とデバイス管理 → ダウンロード済みプロファイルをインストール
 3. 設定 → 一般 → 情報 → 証明書信頼設定 → 該当 CA の「完全な信頼を有効にする」をオン
 
+### Android アプリで証明書エラーが出る（ブラウザは正常）
+
+**症状**: ブラウザでは `https://<サーバ>:3940/` に正常にアクセスできるが、Android アプリでは「証明書エラー: Trust anchor for certification path not found.」が表示される
+
+**原因**: Android 7 以降、アプリはデフォルトでユーザーがインストールした CA 証明書を信頼しない。ブラウザは例外的にユーザー CA を信頼するが、アプリには `network_security_config.xml` での明示的な設定が必要
+
+**対処法**: アプリの `network_security_config.xml` に `<trust-anchors>` でユーザー CA を信頼する設定が含まれていることを確認する。この設定は v0.x.x 以降のアプリに含まれている。古いバージョンの場合はアプリを更新する。
+
 ### SAN（Subject Alternative Name）の不一致
 
 **症状**: CA 証明書をインストール済みなのに、特定のホスト名やIPアドレスでアクセスすると証明書エラーになる
@@ -273,6 +281,9 @@ HTTPS_EXTRA_SANS=myserver.tail01234.ts.net,192.168.1.100
 ```
 
 `.env` 変更後、Docker の場合は `docker compose restart` ではなく再作成が必要:
+
+> **注意**: `docker compose down && docker compose up -d` でコンテナを再作成すると、CA 証明書が再生成される場合がある。その場合はデバイスに新しい CA 証明書を再インストールする必要がある。
+
 ```bash
 docker compose down && docker compose up -d --pull never
 ```
@@ -290,7 +301,7 @@ curl http://localhost:3939/health
 tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}'
 # → main:0.0
 
-# API Key 認証テスト
+# ルームキー認証テスト
 curl -H "Authorization: Bearer <ルームキー>" http://localhost:3939/permission-requests
 # → 200: JSON 配列が返る / 401: ルームキー不一致
 

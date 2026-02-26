@@ -15,6 +15,7 @@ struct PermissionRequestItem: Identifiable, Codable {
     let tool_name: String
     let message: String
     let created_at: Double
+    let expires_at: Double?
     let choices: [ChoiceItem]?
     var response: String?
     var responded_at: Double?
@@ -27,6 +28,10 @@ struct PermissionRequestItem: Identifiable, Codable {
 
     var createdDate: Date {
         Date(timeIntervalSince1970: created_at / 1000)
+    }
+
+    var expiresDate: Date {
+        Date(timeIntervalSince1970: (expires_at ?? created_at + 120000) / 1000)
     }
 }
 
@@ -259,7 +264,7 @@ struct RequestRow: View {
                 Spacer()
                 if item.isPending {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let remaining = max(0, Int(item.createdDate.addingTimeInterval(120).timeIntervalSince(context.date)))
+                        let remaining = max(0, Int(item.expiresDate.timeIntervalSince(context.date)))
                         Text("残り\(remaining)秒")
                             .font(.caption)
                             .monospacedDigit()

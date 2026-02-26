@@ -100,13 +100,13 @@ struct SettingsView: View {
     private var statusColor: Color {
         switch appDelegate.connectionStatus {
         case "接続済み": return .green
-        case let s where s.hasPrefix("認証") || s.hasPrefix("接続失敗"): return .red
+        case let s where s.hasPrefix("認証") || s.hasPrefix("接続失敗") || s.hasPrefix("ルームキー"): return .red
         default: return .orange
         }
     }
 
     private var isErrorStatus: Bool {
-        appDelegate.connectionStatus.hasPrefix("認証") || appDelegate.connectionStatus.hasPrefix("接続失敗")
+        appDelegate.connectionStatus.hasPrefix("認証") || appDelegate.connectionStatus.hasPrefix("接続失敗") || appDelegate.connectionStatus.hasPrefix("ルームキー")
     }
 
     private var apiKeyValidationError: String? {

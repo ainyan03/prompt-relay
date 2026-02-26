@@ -6,7 +6,7 @@ permission-request.sh から呼び出される Python ロジックを集約。
 
 CLI インターフェース:
   python3 prompt_parser.py detect <pane_content>
-  python3 prompt_parser.py parse <stdin_json> <pane_content> [tmux_target] [hostname]
+  python3 prompt_parser.py parse <stdin_json> <pane_content> [tmux_target] [hostname] [timeout]
   python3 prompt_parser.py response <response_json>
 """
 
@@ -68,7 +68,8 @@ def detect_prompt(pane_text: str) -> bool:
 
 def parse_pane(stdin_data: str, pane_data: str,
                tmux_target: str | None = None,
-               hostname: str | None = None) -> dict:
+               hostname: str | None = None,
+               timeout: int | None = None) -> dict:
     """PreToolUse の stdin データとペイン内容からサーバ送信用の構造化データを生成する。"""
     d = json.loads(stdin_data) if stdin_data else {}
 
@@ -190,7 +191,7 @@ def parse_pane(stdin_data: str, pane_data: str,
             truncated.append(f'(+{len(desc_lines) - MAX_LINES} lines)')
         description = '\n'.join(truncated).strip()
 
-    return {
+    result = {
         'tool_name': tool_name,
         'tool_input': d.get('tool_input', {}),
         'message': d.get('message', ''),
@@ -202,6 +203,9 @@ def parse_pane(stdin_data: str, pane_data: str,
         'tmux_target': tmux_target,
         'hostname': hostname,
     }
+    if timeout is not None and timeout > 0:
+        result['timeout'] = timeout
+    return result
 
 
 def parse_response(response_json: str) -> str:
@@ -239,7 +243,12 @@ def main():
         pane_data = sys.argv[3] if len(sys.argv) > 3 else ''
         tmux_target = sys.argv[4] if len(sys.argv) > 4 else None
         hostname = sys.argv[5] if len(sys.argv) > 5 else None
-        result = parse_pane(stdin_data, pane_data, tmux_target, hostname)
+        timeout_str = sys.argv[6] if len(sys.argv) > 6 else None
+        try:
+            timeout_val = int(timeout_str) if timeout_str else None
+        except ValueError:
+            timeout_val = None
+        result = parse_pane(stdin_data, pane_data, tmux_target, hostname, timeout_val)
         print(json.dumps(result))
 
     elif cmd == 'response':

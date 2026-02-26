@@ -7,7 +7,7 @@
     <string name="section_pending">承認待ち</string>
     <string name="section_history">履歴</string>
     <string name="server_url">サーバ URL</string>
-    <string name="api_key">API Key</string>
+    <string name="api_key">ルームキー</string>
     <string name="save">保存</string>
     <string name="reconnect">再接続</string>
     <string name="status_connected">接続済み</string>

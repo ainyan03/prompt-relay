@@ -12,12 +12,17 @@ export interface PermissionRequest {
   tmux_target?: string;
   hostname?: string;
   created_at: number;
+  expires_at: number;
   response?: 'allow' | 'deny' | 'cancelled' | 'expired';
   responded_at?: number;
   send_key?: string;
 }
 
-const PENDING_TIMEOUT_MS = 120 * 1000; // 2分でリクエスト期限切れ（フックの TIMEOUT と一致させる）
+// --- タイムアウト・クリーンアップ設定（環境変数で変更可能）---
+export const PENDING_TIMEOUT_MS = Math.max(10, parseInt(process.env.REQUEST_TIMEOUT || '120', 10)) * 1000;
+const REQUEST_CLEANUP_MS = Math.max(10, parseInt(process.env.REQUEST_CLEANUP || '300', 10)) * 1000;
+const ROOM_CLEANUP_MS = Math.max(60, parseInt(process.env.ROOM_CLEANUP || '3600', 10)) * 1000;
+const MAX_HISTORY = Math.max(0, parseInt(process.env.MAX_HISTORY || '0', 10)); // 0 = 無制限
 
 // --- マルチデバイス管理 ---
 
@@ -48,8 +53,8 @@ interface RoomState {
   apnsDevices: DeviceEntry[];
   webPushDevices: WebPushEntry[];
   lastActivityAt: number;
-  // collapse-id 単調増加カウンタ（tmux_target → 連番、毎回ユニークな collapse-id を生成）
-  collapseCounter: Map<string, number>;
+  // collapse-id 2スロット交互トグル（tmux_target → 0 or 1）
+  collapseSlot: Map<string, number>;
 }
 
 const MAX_ROOMS = Math.max(1, parseInt(process.env.MAX_ROOMS || '10', 10));
@@ -62,7 +67,7 @@ function createRoomState(): RoomState {
     apnsDevices: [],
     webPushDevices: [],
     lastActivityAt: Date.now(),
-    collapseCounter: new Map(),
+    collapseSlot: new Map(),
   };
 }
 
@@ -120,7 +125,7 @@ function evictOldest<T>(arr: T[], getTime: (item: T) => number): void {
 // --- APNs デバイス管理 ---
 
 export function registerDevice(roomKey: string, token: string): void {
-  // 他ルームから同一トークンを削除（API Key 変更時の重複防止）
+  // 他ルームから同一トークンを削除（ルームキー変更時の重複防止）
   for (const [key, room] of rooms) {
     if (key === roomKey) continue;
     const idx = room.apnsDevices.findIndex(d => d.token === token);
@@ -143,7 +148,7 @@ export function registerDevice(roomKey: string, token: string): void {
 }
 
 export function getDeviceTokens(roomKey: string): DeviceEntry[] {
-  return getRoom(roomKey)?.apnsDevices ?? [];
+  return [...(getRoom(roomKey)?.apnsDevices ?? [])];
 }
 
 export function removeDevice(roomKey: string, token: string): void {
@@ -163,7 +168,7 @@ export function touchDevice(roomKey: string, token: string): void {
 // --- Web Push デバイス管理 ---
 
 export function registerWebPush(roomKey: string, sub: WebPushSubscription): void {
-  // 他ルームから同一エンドポイントを削除（API Key 変更時の重複防止）
+  // 他ルームから同一エンドポイントを削除（ルームキー変更時の重複防止）
   for (const [key, room] of rooms) {
     if (key === roomKey) continue;
     const idx = room.webPushDevices.findIndex(d => d.subscription.endpoint === sub.endpoint);
@@ -187,7 +192,7 @@ export function registerWebPush(roomKey: string, sub: WebPushSubscription): void
 }
 
 export function getWebPushSubscriptions(roomKey: string): WebPushEntry[] {
-  return getRoom(roomKey)?.webPushDevices ?? [];
+  return [...(getRoom(roomKey)?.webPushDevices ?? [])];
 }
 
 export function removeWebPush(roomKey: string, endpoint: string): void {
@@ -219,7 +224,7 @@ function cancelPendingByTarget(requestsMap: Map<string, PermissionRequest>, tmux
   return cancelledIds;
 }
 
-export function createRequest(roomKey: string, id: string, tool_name: string, tool_input: Record<string, unknown>, message: string, choices: Choice[] = [], tmux_target?: string, hostname?: string): { request: PermissionRequest; cancelledIds: string[]; collapseSuffix: number } {
+export function createRequest(roomKey: string, id: string, tool_name: string, tool_input: Record<string, unknown>, message: string, choices: Choice[] = [], tmux_target?: string, hostname?: string, timeout_ms?: number): { request: PermissionRequest; cancelledIds: string[]; collapseSlot: number } {
   const room = getOrCreateRoom(roomKey);
 
   // 同じ tmux ペインからの未応答リクエストをキャンセル
@@ -228,13 +233,17 @@ export function createRequest(roomKey: string, id: string, tool_name: string, to
     cancelledIds = cancelPendingByTarget(room.requests, tmux_target);
   }
 
-  // collapse-id 単調増加: 毎回ユニークな値を使い、APNs の「更新」扱いによる配信遅延を回避
-  let collapseSuffix = 0;
+  // collapse-id 2スロット交互: 前回と反対のスロットを使う
+  let collapseSlot = 0;
   if (tmux_target) {
-    const prev = room.collapseCounter.get(tmux_target) ?? 0;
-    collapseSuffix = prev + 1;
-    room.collapseCounter.set(tmux_target, collapseSuffix);
+    const prev = room.collapseSlot.get(tmux_target) ?? 0;
+    collapseSlot = prev === 0 ? 1 : 0;
+    room.collapseSlot.set(tmux_target, collapseSlot);
   }
+
+  const now = Date.now();
+  // タイムアウト: フックから指定された値を優先、なければサーバのデフォルト
+  const effectiveTimeout = timeout_ms && timeout_ms > 0 ? timeout_ms : PENDING_TIMEOUT_MS;
 
   const req: PermissionRequest = {
     id,
@@ -244,10 +253,11 @@ export function createRequest(roomKey: string, id: string, tool_name: string, to
     choices,
     tmux_target,
     hostname,
-    created_at: Date.now(),
+    created_at: now,
+    expires_at: now + effectiveTimeout,
   };
   room.requests.set(id, req);
-  return { request: req, cancelledIds, collapseSuffix };
+  return { request: req, cancelledIds, collapseSlot };
 }
 
 // choices から応答に対応するキーを決定
@@ -279,9 +289,9 @@ export function resolveSendKey(req: PermissionRequest, response: 'allow' | 'deny
   return String(choices[choices.length - 1].number);
 }
 
-// 未応答のまま PENDING_TIMEOUT_MS を超えたリクエストを expired にする
+// 未応答のまま expires_at を超えたリクエストを expired にする
 function expireIfStale(req: PermissionRequest): void {
-  if (!req.response && Date.now() - req.created_at > PENDING_TIMEOUT_MS) {
+  if (!req.response && Date.now() > req.expires_at) {
     req.response = 'expired';
     req.responded_at = Date.now();
   }
@@ -315,6 +325,22 @@ export function cancelRequest(roomKey: string, id: string): boolean {
   return true;
 }
 
+// リクエストのシリアライズ（REST API / WebSocket 共通）
+export function serializeRequest(r: { id: string; tool_name: string; message: string; choices: { number: number; text: string }[]; created_at: number; expires_at: number; response?: string; responded_at?: number; send_key?: string; hostname?: string }) {
+  return {
+    id: r.id,
+    tool_name: r.tool_name,
+    message: r.message,
+    choices: r.choices.length > 0 ? r.choices : null,
+    created_at: r.created_at,
+    expires_at: r.expires_at,
+    response: r.response || null,
+    responded_at: r.responded_at || null,
+    send_key: r.send_key || null,
+    hostname: r.hostname || null,
+  };
+}
+
 // 指定 tmux_target に未応答の permission request があるか
 export function hasPendingRequest(roomKey: string, tmuxTarget: string): boolean {
   const room = getRoom(roomKey);
@@ -327,26 +353,37 @@ export function hasPendingRequest(roomKey: string, tmuxTarget: string): boolean 
   return false;
 }
 
-// 全リクエスト一覧（新しい順）
+// 全リクエスト一覧（新しい順、MAX_HISTORY で件数制限）
 export function getAllRequests(roomKey: string): PermissionRequest[] {
   const room = getRoom(roomKey);
   if (!room) return [];
   const all = Array.from(room.requests.values());
   all.forEach(expireIfStale);
-  return all.sort((a, b) => b.created_at - a.created_at);
+  const sorted = all.sort((a, b) => b.created_at - a.created_at);
+  return MAX_HISTORY > 0 ? sorted.slice(0, MAX_HISTORY) : sorted;
 }
 
-// 古いリクエストを定期的にクリーンアップ（5分以上前のもの）
-// 空ルーム（リクエスト 0・デバイス 0）かつ lastActivityAt が 1 時間以上前のルームを自動削除
+// 古いリクエストを定期的にクリーンアップ（REQUEST_CLEANUP 超過分）
+// MAX_HISTORY 超過分も削除（メモリ管理）
+// 空ルーム（リクエスト 0・デバイス 0）かつ lastActivityAt が ROOM_CLEANUP 以上前のルームを自動削除
 export function cleanup(): void {
-  const requestCutoff = Date.now() - 5 * 60 * 1000;
-  const roomCutoff = Date.now() - 60 * 60 * 1000;
+  const requestCutoff = Date.now() - REQUEST_CLEANUP_MS;
+  const roomCutoff = Date.now() - ROOM_CLEANUP_MS;
 
   for (const [roomKey, room] of rooms) {
-    // リクエストのクリーンアップ
+    // リクエストのクリーンアップ（時間ベース）
     for (const [id, req] of room.requests) {
       if (req.created_at < requestCutoff) {
         room.requests.delete(id);
+      }
+    }
+
+    // MAX_HISTORY 超過分を削除（件数ベース）
+    if (MAX_HISTORY > 0 && room.requests.size > MAX_HISTORY) {
+      const sorted = Array.from(room.requests.entries())
+        .sort((a, b) => b[1].created_at - a[1].created_at);
+      for (let i = MAX_HISTORY; i < sorted.length; i++) {
+        room.requests.delete(sorted[i][0]);
       }
     }
 

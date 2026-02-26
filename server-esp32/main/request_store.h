@@ -22,6 +22,7 @@ struct PermissionRequest {
     char tmux_target[64];
     char hostname[64];
     int64_t created_at;         // ミリ秒 (boot 相対)
+    int64_t expires_at;         // ミリ秒 (boot 相対)
     char response[16];          // "" / "allow" / "deny" / "cancelled" / "expired"
     int64_t responded_at;       // 0 = 未応答
     char send_key[8];
@@ -38,7 +39,8 @@ PermissionRequest* request_store_create(
     const char* subtitle,
     const Choice* choices, uint8_t choice_count,
     const char* tmux_target,
-    const char* hostname
+    const char* hostname,
+    int64_t timeout_ms = 0
 );
 
 // ID でリクエスト取得 (expireIfStale 込み)

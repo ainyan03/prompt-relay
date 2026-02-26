@@ -16,6 +16,7 @@ data class PermissionRequest(
     val message: String = "",
     val choices: List<Choice>? = null,
     @SerialName("created_at") val createdAt: Long = 0L,
+    @SerialName("expires_at") val expiresAt: Long? = null,
     val response: String? = null,
     @SerialName("responded_at") val respondedAt: Long? = null,
     @SerialName("send_key") val sendKey: String? = null,
@@ -26,8 +27,8 @@ data class PermissionRequest(
     val isExpired: Boolean get() = response == "expired"
 
     fun remainingSeconds(): Int {
-        val elapsed = System.currentTimeMillis() - createdAt
-        return maxOf(0, ((120_000 - elapsed) / 1000).toInt()) // サーバの PENDING_TIMEOUT_MS と一致
+        val deadline = expiresAt ?: (createdAt + 120_000)
+        return maxOf(0, ((deadline - System.currentTimeMillis()) / 1000).toInt())
     }
 
     /** choice 番号から応答テキストを解決する */

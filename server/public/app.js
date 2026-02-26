@@ -47,14 +47,14 @@
     toggleConnect.checked = localStorage.getItem('connectEnabled') !== 'false';
   }
 
-  // --- API Key validation ---
+  // --- ルームキー validation ---
   const MIN_KEY_LENGTH = 8;
   const MAX_KEY_LENGTH = 128;
 
   function validateApiKey(key) {
-    if (!key) return 'API Key を入力してください';
-    if (key.length < MIN_KEY_LENGTH) return `API Key は ${MIN_KEY_LENGTH} 文字以上で入力してください (現在: ${key.length}文字)`;
-    if (key.length > MAX_KEY_LENGTH) return `API Key は ${MAX_KEY_LENGTH} 文字以下で入力してください`;
+    if (!key) return 'ルームキーを入力してください';
+    if (key.length < MIN_KEY_LENGTH) return `ルームキーは ${MIN_KEY_LENGTH} 文字以上で入力してください (現在: ${key.length}文字)`;
+    if (key.length > MAX_KEY_LENGTH) return `ルームキーは ${MAX_KEY_LENGTH} 文字以下で入力してください`;
     return '';
   }
 
@@ -147,7 +147,7 @@
           stopPolling();
           pollingStatusEl.innerHTML = statusHtml(false, '認証エラー');
           toggleConnect.checked = false;
-          connectErrorEl.textContent = '認証エラー: API Key を確認してください';
+          connectErrorEl.textContent = '認証エラー: ルームキーを確認してください';
           connectErrorEl.style.display = '';
           localStorage.setItem('connectEnabled', 'false');
         }
@@ -339,7 +339,7 @@
   function rebuildCard(card, req) {
     const isPending = !req.response;
     const elapsed = Date.now() - req.created_at;
-    const remaining = Math.max(0, 120000 - elapsed); // 2分タイムアウト（サーバの PENDING_TIMEOUT_MS と一致）
+    const remaining = Math.max(0, (req.expires_at || req.created_at + 120000) - Date.now());
     const remainSec = Math.ceil(remaining / 1000);
 
     let html = '<div class="card-header">';
@@ -447,7 +447,7 @@
       const req = requests.find((r) => r.id === id);
       if (!req || req.response) return;
 
-      const remaining = Math.max(0, 120000 - (Date.now() - req.created_at)); // 2分タイムアウト
+      const remaining = Math.max(0, (req.expires_at || req.created_at + 120000) - Date.now());
       const timer = card.querySelector('.card-timer');
       if (timer) {
         const sec = Math.ceil(remaining / 1000);

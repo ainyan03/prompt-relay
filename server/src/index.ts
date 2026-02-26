@@ -4,9 +4,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { Request, Response, NextFunction } from 'express';
-import { randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
 import { config } from 'dotenv';
-import { createRequest, getRequest, respondToRequest, cancelRequest, resolveSendKey, registerDevice, getDeviceTokens, removeDevice, touchDevice, registerWebPush, getWebPushSubscriptions, removeWebPush, touchWebPush, getAllRequests, cleanup, hasPendingRequest } from './store.js';
+import { createRequest, getRequest, respondToRequest, cancelRequest, resolveSendKey, registerDevice, getDeviceTokens, removeDevice, touchDevice, registerWebPush, getWebPushSubscriptions, removeWebPush, touchWebPush, getAllRequests, cleanup, hasPendingRequest, serializeRequest, PENDING_TIMEOUT_MS } from './store.js';
 import { sendNotification, sendSilentNotification, isConfigured, isApnsBadDevice } from './apns.js';
 import { initWebPush, sendWebPushNotification, isConfigured as isWebPushConfigured, getVapidPublicKey } from './web-push.js';
 import { ensureCerts, getLanIPs, isSanCovered, regenerateCert, dynamicSanCount } from './certs.js';
@@ -79,7 +79,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 
 // ヘルスチェック（認証不要、Docker ヘルスチェック用）
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', request_timeout_ms: PENDING_TIMEOUT_MS });
 });
 
 app.use(express.json());
@@ -117,7 +117,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   if (!key) {
     res.status(401).json({ error: 'unauthorized' });
   } else if (key.length < MIN_KEY_LENGTH || key.length > MAX_KEY_LENGTH) {
-    res.status(401).json({ error: `API Key must be ${MIN_KEY_LENGTH}-${MAX_KEY_LENGTH} characters` });
+    res.status(401).json({ error: `Room key must be ${MIN_KEY_LENGTH}-${MAX_KEY_LENGTH} characters` });
   } else {
     req.roomKey = key;
     next();
@@ -168,19 +168,21 @@ interface ApnsNotificationPayload {
 async function trySendApnsNotification(roomKey: string, payload: ApnsNotificationPayload): Promise<void> {
   const devices = getDeviceTokens(roomKey);
   if (devices.length === 0 || !isConfigured()) return;
+  const targets = devices.map(d => d.token);
 
   const results = await Promise.allSettled(
-    devices.map(d => sendNotification(d.token, payload))
+    targets.map(token => sendNotification(token, payload))
   );
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
+    const token = targets[i];
     if (r.status === 'fulfilled') {
-      touchDevice(roomKey, devices[i].token);
-      console.log(`[apns] Notification sent to ${devices[i].token.substring(0, 16)}...`);
+      touchDevice(roomKey, token);
+      console.log(`[apns] Notification sent to ${token.substring(0, 16)}...`);
     } else {
       if (isApnsBadDevice(r.reason)) {
-        console.log(`[apns] Bad device token, removing: ${devices[i].token.substring(0, 16)}...`);
-        removeDevice(roomKey, devices[i].token);
+        console.log(`[apns] Bad device token, removing: ${token.substring(0, 16)}...`);
+        removeDevice(roomKey, token);
       } else {
         console.error(`[apns] Failed to send notification:`, r.reason);
       }
@@ -191,18 +193,20 @@ async function trySendApnsNotification(roomKey: string, payload: ApnsNotificatio
 async function trySendApnsSilent(roomKey: string, data: Record<string, unknown>): Promise<void> {
   const devices = getDeviceTokens(roomKey);
   if (devices.length === 0 || !isConfigured()) return;
+  const targets = devices.map(d => d.token);
 
   const results = await Promise.allSettled(
-    devices.map(d => sendSilentNotification(d.token, data))
+    targets.map(token => sendSilentNotification(token, data))
   );
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
+    const token = targets[i];
     if (r.status === 'fulfilled') {
-      touchDevice(roomKey, devices[i].token);
+      touchDevice(roomKey, token);
     } else {
       if (isApnsBadDevice(r.reason)) {
-        console.log(`[apns] Bad device token, removing: ${devices[i].token.substring(0, 16)}...`);
-        removeDevice(roomKey, devices[i].token);
+        console.log(`[apns] Bad device token, removing: ${token.substring(0, 16)}...`);
+        removeDevice(roomKey, token);
       } else {
         console.error(`[apns] Silent push failed:`, r.reason);
       }
@@ -213,20 +217,22 @@ async function trySendApnsSilent(roomKey: string, data: Record<string, unknown>)
 async function trySendWebPushAll(roomKey: string, payload: { title: string; subtitle?: string; body: string; tag?: string; data?: Record<string, unknown> }): Promise<void> {
   const entries = getWebPushSubscriptions(roomKey);
   if (entries.length === 0 || !isWebPushConfigured()) return;
+  const targets = entries.map(e => e.subscription);
 
   const results = await Promise.allSettled(
-    entries.map(e => sendWebPushNotification(e.subscription, payload))
+    targets.map(subscription => sendWebPushNotification(subscription, payload))
   );
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
+    const endpoint = targets[i].endpoint;
     if (r.status === 'fulfilled') {
-      touchWebPush(roomKey, entries[i].subscription.endpoint);
-      console.log(`[web-push] Notification sent to ${entries[i].subscription.endpoint.substring(0, 48)}...`);
+      touchWebPush(roomKey, endpoint);
+      console.log(`[web-push] Notification sent to ${endpoint.substring(0, 48)}...`);
     } else {
       const err = r.reason as any;
       if (err?.statusCode === 410 || err?.statusCode === 404) {
         console.log(`[web-push] Subscription expired (${err.statusCode}), removing`);
-        removeWebPush(roomKey, entries[i].subscription.endpoint);
+        removeWebPush(roomKey, endpoint);
       } else {
         console.error(`[web-push] Failed to send notification:`, err);
       }
@@ -261,8 +267,8 @@ app.post('/unregister-web', (req, res) => {
 // 権限リクエスト受信（フックスクリプトから）
 app.post('/permission-request', async (req, res) => {
   const roomKey = req.roomKey!;
-  const { tool_name, tool_input, message, header, description, prompt_question, choices, has_tmux, tmux_target, hostname } = req.body;
-  const id = randomUUID();
+  const { tool_name, tool_input, message, header, description, prompt_question, choices, has_tmux, tmux_target, hostname, timeout } = req.body;
+  const id = randomBytes(4).toString('hex');
 
   const toolDisplay = tool_name || 'Unknown';
   // header があればそちらを subtitle に使用（例: "Bash command", "Edit file"）
@@ -295,17 +301,25 @@ app.post('/permission-request', async (req, res) => {
   // 57文字で切断: APNs の subtitle 表示幅制限（60文字）に収めるため末尾に「…」を付加
   const notifyBody = notifyLine.length > 60 ? notifyLine.substring(0, 57) + '…' : notifyLine;
 
-  const { request, cancelledIds, collapseSuffix } = createRequest(roomKey, id, toolDisplay, tool_input || {}, detailText, choices || [], tmux_target, hostname);
+  // フックから送信された timeout（秒）を ms に変換
+  const timeoutMs = typeof timeout === 'number' && timeout > 0 ? timeout * 1000 : undefined;
+
+  const { request, cancelledIds, collapseSlot } = createRequest(roomKey, id, toolDisplay, tool_input || {}, detailText, choices || [], tmux_target, hostname, timeoutMs);
   console.log(`[permission] New request: ${id} - ${subtitleText}: ${detailText.replace(/\n/g, ' | ')} [tmux_target=${tmux_target || '(none)'}]`);
   if (choices?.length) {
     console.log(`[permission]   choices: ${choices.map((c: { number: number; text: string }) => `${c.number}.${c.text}`).join(' | ')}`);
   }
 
   // レスポンスを即返す（フックのブロックを防ぐ）
-  res.json({ id, tool_name: toolDisplay, message: detailText });
+  res.json({ id, tool_name: toolDisplay, message: detailText, expires_at: request.expires_at });
 
-  // collapse-id: 毎回ユニークな値を使い、APNs の「更新」扱いによる配信遅延を回避
-  const collapseId = tmux_target ? `relay:${tmux_target}:${collapseSuffix}` : undefined;
+  // 同一 tmux_target の旧リクエストがキャンセルされた場合、通知を消去
+  for (const cid of cancelledIds) {
+    trySendApnsSilent(roomKey, { type: 'dismiss', request_id: cid });
+  }
+
+  // collapse-id: 2スロット交互（最大2件、直前の通知は置換しない）
+  const collapseId = tmux_target ? `relay:${tmux_target}:${collapseSlot}` : undefined;
   if (collapseId) {
     console.log(`[permission]   collapse-id: ${collapseId}`);
   }
@@ -328,6 +342,7 @@ app.post('/permission-request', async (req, res) => {
     data: {
       request_id: id,
       type: 'permission_request',
+      ...(tmux_target ? { tmux_target } : {}),
       ...(choices?.length ? { choices } : {}),
     },
   });
@@ -433,20 +448,11 @@ app.post('/permission-request/:id/cancel', (req, res) => {
   trySendApnsSilent(roomKey, { type: 'dismiss', request_id: req.params.id });
 });
 
+
 // リクエスト一覧（iOS アプリ / PWA 用）
 app.get('/permission-requests', (req, res) => {
   const all = getAllRequests(req.roomKey!);
-  res.json(all.map(r => ({
-    id: r.id,
-    tool_name: r.tool_name,
-    message: r.message,
-    choices: r.choices.length > 0 ? r.choices : null,
-    created_at: r.created_at,
-    response: r.response || null,
-    responded_at: r.responded_at || null,
-    send_key: r.send_key || null,
-    hostname: r.hostname || null,
-  })));
+  res.json(all.map(serializeRequest));
 });
 
 // 単純な通知送信（idle_prompt 等）

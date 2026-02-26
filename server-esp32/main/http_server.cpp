@@ -132,6 +132,7 @@ static esp_err_t handle_permission_request_create(httpd_req_t* req) {
     cJSON* has_tmux_json = cJSON_GetObjectItem(root, "has_tmux");
     cJSON* tool_input_json = cJSON_GetObjectItem(root, "tool_input");
     cJSON* choices_json = cJSON_GetObjectItem(root, "choices");
+    cJSON* timeout_json = cJSON_GetObjectItem(root, "timeout");
 
     const char* tool_display = (tool_name && tool_name[0]) ? tool_name : "Unknown";
     const char* subtitle_text = (header && header[0]) ? header : tool_display;
@@ -190,11 +191,18 @@ static esp_err_t handle_permission_request_create(httpd_req_t* req) {
         }
     }
 
+    // フックから送信された timeout（秒）を ms に変換
+    int64_t timeout_ms = 0;
+    if (cJSON_IsNumber(timeout_json) && timeout_json->valuedouble > 0) {
+        timeout_ms = (int64_t)(timeout_json->valuedouble * 1000);
+    }
+
     // リクエスト作成
     PermissionRequest* pr = request_store_create(
         tool_display, detail_text, subtitle_text,
         choices, choice_count,
-        tmux_target, hostname
+        tmux_target, hostname,
+        timeout_ms
     );
 
     if (!pr) {
@@ -210,6 +218,7 @@ static esp_err_t handle_permission_request_create(httpd_req_t* req) {
     cJSON_AddStringToObject(resp, "id", pr->id);
     cJSON_AddStringToObject(resp, "tool_name", tool_display);
     cJSON_AddStringToObject(resp, "message", detail_text);
+    cJSON_AddNumberToObject(resp, "expires_at", (double)pr->expires_at);
 
     char* resp_str = cJSON_PrintUnformatted(resp);
     httpd_resp_set_type(req, "application/json");
@@ -442,6 +451,7 @@ static esp_err_t handle_permission_requests_list(httpd_req_t* req) {
         }
 
         cJSON_AddNumberToObject(item, "created_at", (double)r->created_at);
+        cJSON_AddNumberToObject(item, "expires_at", (double)r->expires_at);
 
         if (r->response[0] != '\0') {
             cJSON_AddStringToObject(item, "response", r->response);

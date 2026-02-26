@@ -92,7 +92,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    // MARK: - API Key バリデーション
+    // MARK: - ルームキーバリデーション
     var isApiKeyValid: Bool {
         apiKey.count >= 8 && apiKey.count <= 128
     }
@@ -131,7 +131,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
     }
 
-    // MARK: - API キー更新
+    // MARK: - ルームキー更新
     func updateApiKey(_ key: String) {
         apiKey = key
         UserDefaults.standard.set(key, forKey: "apiKey")
@@ -143,7 +143,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - サーバにトークン登録
     func registerTokenWithServer(_ token: String) {
         guard isApiKeyValid else {
-            connectionStatus = "API Key エラー"
+            connectionStatus = "ルームキーエラー"
             return
         }
         guard let url = URL(string: "\(serverURL)/register") else { return }

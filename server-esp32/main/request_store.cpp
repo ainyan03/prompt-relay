@@ -55,7 +55,7 @@ static void cancel_pending_by_target(const char* tmux_target) {
 }
 
 static void expire_if_stale(PermissionRequest* req) {
-    if (req->response[0] == '\0' && (now_ms() - req->created_at) > PENDING_TIMEOUT_MS) {
+    if (req->response[0] == '\0' && now_ms() > req->expires_at) {
         strncpy(req->response, "expired", sizeof(req->response) - 1);
         req->responded_at = now_ms();
     }
@@ -67,7 +67,8 @@ PermissionRequest* request_store_create(
     const char* subtitle,
     const Choice* choices, uint8_t choice_count,
     const char* tmux_target,
-    const char* hostname
+    const char* hostname,
+    int64_t timeout_ms
 ) {
     // 同じ tmux ペインからの未応答リクエストをキャンセル
     cancel_pending_by_target(tmux_target);
@@ -117,7 +118,10 @@ PermissionRequest* request_store_create(
         slot->choices[i] = choices[i];
     }
 
-    slot->created_at = now_ms();
+    int64_t now = now_ms();
+    slot->created_at = now;
+    // タイムアウト: フックから指定された値を優先、なければデフォルト
+    slot->expires_at = now + (timeout_ms > 0 ? timeout_ms : PENDING_TIMEOUT_MS);
 
     ESP_LOGI(TAG, "Created request %s: %s", slot->id, slot->tool_name);
     return slot;

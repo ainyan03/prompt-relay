@@ -4,7 +4,7 @@
 
 | メソッド | パス | 説明 |
 |---------|------|------|
-| `GET` | `/health` | ヘルスチェック（認証不要）。`{ "status": "ok" }` を返す |
+| `GET` | `/health` | ヘルスチェック（認証不要）。`{ "status": "ok", "request_timeout_ms": 120000 }` を返す |
 | `GET` | `/PromptRelay-CA.pem` | CA 証明書のダウンロード（認証不要） |
 | `POST` | `/register` | iOS デバイストークンの登録（複数デバイス対応、上限 `MAX_DEVICES`） |
 | `POST` | `/register-web` | Web Push subscription の登録（複数デバイス対応、上限 `MAX_DEVICES`） |
@@ -32,9 +32,10 @@
 
 ### Permission Request
 
+**POST `/permission-request` リクエストボディ（hook → server）:**
+
 ```json
 {
-  "id": "uuid",
   "tool_name": "Bash",
   "tool_input": {},
   "message": "",
@@ -49,11 +50,44 @@
   "has_tmux": true,
   "tmux_target": "hostname:session:window.pane",
   "hostname": "my-mac",
-  "response": null,
-  "created_at": "2025-01-01T00:00:00.000Z",
-  "expires_at": "2025-01-01T00:02:00.000Z"
+  "timeout": 120
 }
 ```
+
+- `timeout`: リクエストのタイムアウト秒数（オプション）。省略時はサーバの `REQUEST_TIMEOUT` がデフォルトとして使われる
+
+**POST `/permission-request` レスポンス:**
+
+```json
+{
+  "id": "a1b2c3d4",
+  "tool_name": "Bash",
+  "message": "curl -s https://example.com",
+  "expires_at": 1735689720000
+}
+```
+
+- `id`: リクエスト識別子（8文字の16進数文字列）
+- `expires_at`: リクエストの有効期限（エポックミリ秒）。フックはこの値をポーリングのデッドラインとして使用する
+
+**GET `/permission-requests` レスポンス要素:**
+
+```json
+{
+  "id": "a1b2c3d4",
+  "tool_name": "Bash",
+  "message": "...",
+  "choices": [...],
+  "created_at": 1735689600000,
+  "expires_at": 1735689720000,
+  "response": null,
+  "responded_at": null,
+  "send_key": null,
+  "hostname": "my-mac"
+}
+```
+
+- `created_at`, `expires_at`, `responded_at`: エポックミリ秒
 
 ### Response
 
@@ -92,7 +126,7 @@ wss://<host>:<https_port>/ws?key=<ルームキー>
   "type": "update",
   "requests": [
     {
-      "id": "uuid",
+      "id": "a1b2c3d4",
       "tool_name": "Bash",
       "message": "...",
       "choices": [...],
@@ -115,5 +149,5 @@ wss://<host>:<https_port>/ws?key=<ルームキー>
 
 | ステータスコード | 意味 | 発生条件 |
 |-----------------|------|----------|
-| `401 Unauthorized` | 認証エラー | API キーが未指定または不正 |
+| `401 Unauthorized` | 認証エラー | ルームキーが未指定または不正 |
 | `404 Not Found` | リソースが存在しない | 指定された ID のリクエストが見つからない、または期限切れ |

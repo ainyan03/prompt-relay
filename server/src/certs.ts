@@ -199,8 +199,23 @@ export function ensureCerts(): CertPaths | null {
     console.log(`[certs] CA saved to ${CA_CERT_PATH}`);
   }
 
-  // サーバ証明書は毎回再生成（IP 変更に対応）
-  const server = generateServerCert(caCert, caKey, lanIPs, extraSans);
+  // 既存サーバ証明書から動的 SAN を復元（restart 時の SAN 消失防止）
+  if (fs.existsSync(SERVER_CERT_PATH)) {
+    try {
+      const oldCert = forge.pki.certificateFromPem(fs.readFileSync(SERVER_CERT_PATH, 'utf8'));
+      const sanExt = oldCert.getExtension('subjectAltName') as any;
+      if (sanExt?.altNames) {
+        for (const alt of sanExt.altNames) {
+          const val = alt.ip || alt.value;
+          if (val) dynamicSans.add(val);
+        }
+      }
+    } catch { /* 破損時は無視 */ }
+  }
+
+  // サーバ証明書は毎回再生成（IP 変更に対応、既存 SAN は dynamicSans 経由で引き継ぎ）
+  const allExtra = [...extraSans, ...dynamicSans];
+  const server = generateServerCert(caCert, caKey, lanIPs, allExtra);
   fs.writeFileSync(SERVER_CERT_PATH, forge.pki.certificateToPem(server.cert));
   fs.writeFileSync(SERVER_KEY_PATH, forge.pki.privateKeyToPem(server.key), { mode: 0o600 });
 

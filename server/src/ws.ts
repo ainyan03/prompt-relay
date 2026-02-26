@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
 import type { Server as HttpsServer } from 'https';
 import type { IncomingMessage } from 'http';
-import { getAllRequests } from './store.js';
+import { getAllRequests, serializeRequest } from './store.js';
 
 interface WsClient {
   ws: WebSocket;
@@ -60,8 +60,15 @@ function attachWSS(server: HttpServer | HttpsServer): void {
 
     (ws as any).__alive = true;
   });
+}
 
-  // 30秒ごとの ping/pong ヘルスチェック
+export function setupWebSocket(httpServer: HttpServer, httpsServer?: HttpsServer | null): void {
+  attachWSS(httpServer);
+  if (httpsServer) {
+    attachWSS(httpsServer);
+  }
+
+  // 30秒ごとの ping/pong ヘルスチェック（サーバ数に関わらず1本）
   setInterval(() => {
     for (const client of clients) {
       if ((client.ws as any).__alive === false) {
@@ -73,13 +80,7 @@ function attachWSS(server: HttpServer | HttpsServer): void {
       client.ws.ping();
     }
   }, 30_000);
-}
 
-export function setupWebSocket(httpServer: HttpServer, httpsServer?: HttpsServer | null): void {
-  attachWSS(httpServer);
-  if (httpsServer) {
-    attachWSS(httpsServer);
-  }
   console.log(`[ws] WebSocket server attached`);
 }
 
@@ -87,17 +88,7 @@ function buildPayload(roomKey: string) {
   const all = getAllRequests(roomKey);
   return {
     type: 'update',
-    requests: all.map(r => ({
-      id: r.id,
-      tool_name: r.tool_name,
-      message: r.message,
-      choices: r.choices.length > 0 ? r.choices : null,
-      created_at: r.created_at,
-      response: r.response || null,
-      responded_at: r.responded_at || null,
-      send_key: r.send_key || null,
-      hostname: r.hostname || null,
-    })),
+    requests: all.map(serializeRequest),
   };
 }
 
