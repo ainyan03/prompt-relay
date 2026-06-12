@@ -22,6 +22,30 @@ export function isApnsBadDevice(err: unknown): boolean {
 let cachedToken: { token: string; issuedAt: number } | null = null;
 let cachedClient: { client: http2.ClientHttp2Session; host: string } | null = null;
 
+// 接続レベルの障害（stale 接続の使用時に発生）。HTTP 応答が返った場合 (ApnsError) は対象外
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'ERR_HTTP2_INVALID_SESSION',
+  'ERR_HTTP2_GOAWAY_SESSION',
+  'ERR_HTTP2_STREAM_CANCEL',
+]);
+
+function isRetryableTransportError(err: unknown): boolean {
+  if (err instanceof ApnsError) return false;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && RETRYABLE_TRANSPORT_CODES.has(code);
+}
+
+function destroyCachedClient(): void {
+  if (cachedClient) {
+    cachedClient.client.destroy();
+    cachedClient = null;
+  }
+}
+
 function getClient(): http2.ClientHttp2Session {
   const isProduction = process.env.APNS_PRODUCTION === 'true';
   const host = isProduction ? 'api.push.apple.com' : 'api.sandbox.push.apple.com';
@@ -31,6 +55,8 @@ function getClient(): http2.ClientHttp2Session {
   }
 
   const client = http2.connect(`https://${host}`);
+  // アイドル接続は自発的に閉じる: NAT や APNs 側の無通告切断による stale 接続を防ぐ
+  client.setTimeout(120_000, () => client.close());
   client.on('error', (err) => {
     console.error('[apns] HTTP/2 connection error:', err.message);
     if (cachedClient?.client === client) cachedClient = null;
@@ -75,7 +101,7 @@ interface NotificationPayload {
   data?: Record<string, unknown>;
 }
 
-function sendApnsRequest(
+async function sendApnsRequest(
   deviceToken: string,
   apnsPayload: Record<string, unknown>,
   pushType: 'alert' | 'background',
@@ -86,24 +112,41 @@ function sendApnsRequest(
   const body = JSON.stringify(apnsPayload);
   const token = getJwt();
 
+  const headers: Record<string, string | number> = {
+    ':method': 'POST',
+    ':path': `/3/device/${deviceToken}`,
+    'authorization': `bearer ${token}`,
+    'apns-topic': bundleId,
+    'apns-push-type': pushType,
+    'apns-priority': priority,
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
+  };
+  if (collapseId) {
+    headers['apns-collapse-id'] = collapseId;
+  }
+
+  try {
+    return await attemptApnsRequest(headers, body);
+  } catch (err) {
+    if (!isRetryableTransportError(err)) throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    console.warn(`[apns] Transport error (${code}), retrying with fresh connection`);
+    destroyCachedClient();
+    return attemptApnsRequest(headers, body);
+  }
+}
+
+function attemptApnsRequest(headers: Record<string, string | number>, body: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const client = getClient();
-
-    const headers: Record<string, string | number> = {
-      ':method': 'POST',
-      ':path': `/3/device/${deviceToken}`,
-      'authorization': `bearer ${token}`,
-      'apns-topic': bundleId,
-      'apns-push-type': pushType,
-      'apns-priority': priority,
-      'content-type': 'application/json',
-      'content-length': Buffer.byteLength(body),
-    };
-    if (collapseId) {
-      headers['apns-collapse-id'] = collapseId;
+    let req: ReturnType<http2.ClientHttp2Session['request']>;
+    try {
+      req = getClient().request(headers);
+    } catch (err) {
+      // セッション破棄直後の client.request は同期例外を投げる (ERR_HTTP2_INVALID_SESSION 等)
+      reject(err);
+      return;
     }
-
-    const req = client.request(headers);
 
     // 15秒でタイムアウト（APNs が無応答の場合のハング防止）
     req.setTimeout(15_000, () => {

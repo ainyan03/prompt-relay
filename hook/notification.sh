@@ -14,13 +14,26 @@ fi
 
 INPUT=$(cat) # stdin から Notification フックの JSON データを読み取り
 
-# tool_name フィールドでイベント種別を判定（idle_prompt / permission_prompt 等）
-HOOK_EVENT=$(/usr/bin/env python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name',''))" 2>/dev/null <<< "$INPUT")
+# デバッグ: /tmp/prompt-relay-debug が存在する場合、hook 入力をそこに追記する
+[ -f /tmp/prompt-relay-debug ] && printf '%s\n' "$INPUT" >> /tmp/prompt-relay-debug 2>/dev/null
+
+# イベント種別を判定（idle_prompt / permission_prompt 等）
+# 種別フィールドは Claude Code のバージョンにより異なるため複数候補を参照する。
+# いずれも無い場合は、本フックが matcher "idle_prompt" で登録されている前提で
+# idle_prompt とみなす（JSON パース失敗時のみ空を返して送信を抑止）。
+HOOK_EVENT=$(/usr/bin/env python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+print(d.get('notification_type') or d.get('tool_name') or 'idle_prompt')
+" 2>/dev/null <<< "$INPUT")
 
 if [ -z "$HOOK_EVENT" ] || [ "$HOOK_EVENT" = "permission_prompt" ]; then
   # permission_prompt は permission-request.sh で処理されるため、ここでは無視
   # /notify は category なしでボタンなし通知になり、承認操作ができない
-  # HOOK_EVENT が空の場合も JSON パース失敗のため送信しない
+  # HOOK_EVENT が空の場合は JSON パース失敗のため送信しない
   exit 0
 elif [ "$HOOK_EVENT" = "idle_prompt" ]; then
   TITLE="Done"
