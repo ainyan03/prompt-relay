@@ -12,6 +12,7 @@ import { initWebPush, sendWebPushNotification, isConfigured as isWebPushConfigur
 import { ensureCerts, getLanIPs, isSanCovered, regenerateCert, dynamicSanCount } from './certs.js';
 import { setupWebSocket, broadcast } from './ws.js';
 import { makeCollapseId } from './collapse-id.js';
+import { NotificationDedupe } from './notification-dedupe.js';
 
 config();
 initWebPush();
@@ -25,6 +26,7 @@ declare global {
 }
 
 const app = express();
+const notificationDedupe = new NotificationDedupe();
 
 const PORT = parseInt(process.env.PORT || '3939');
 
@@ -464,7 +466,7 @@ app.get('/permission-requests', (req, res) => {
 // 単純な通知送信（idle_prompt 等）
 app.post('/notify', async (req, res) => {
   const roomKey = req.roomKey!;
-  const { title, message, hostname, tmux_target } = req.body;
+  const { title, message, hostname, tmux_target, event_id } = req.body;
   console.log(`[notify] ${title || 'Claude Code'}${hostname ? ` [${hostname}]` : ''}: ${message || '(no message)'}`);
 
   // 同一 tmux_target に未応答の permission request がある場合はプッシュ通知をスキップ
@@ -472,6 +474,14 @@ app.post('/notify', async (req, res) => {
   if (tmux_target && hasPendingRequest(roomKey, tmux_target)) {
     console.log(`[notify] Skipped push: pending permission request for ${tmux_target}`);
     res.json({ ok: true });
+    return;
+  }
+
+  // goal完了など同じライフサイクルイベントの再送は一度だけ配信する。
+  // event_idを送らない旧hookの挙動は変えない。
+  if (!notificationDedupe.accept(roomKey, event_id)) {
+    console.log('[notify] Skipped duplicate lifecycle event');
+    res.json({ ok: true, deduplicated: true });
     return;
   }
 

@@ -10,6 +10,7 @@ CODEX_HOOKS="$HOME/.codex/hooks.json"
 PERMISSION_HOOK="$SCRIPT_DIR/hook/permission-request.sh"
 CODEX_PERMISSION_HOOK="$SCRIPT_DIR/hook/codex-permission-request.sh"
 NOTIFICATION_HOOK="$SCRIPT_DIR/hook/notification.sh"
+CODEX_GOAL_STATUS="$SCRIPT_DIR/hook/codex_goal_status.py"
 
 echo "=== prompt-relay セットアップ ==="
 echo ""
@@ -30,7 +31,7 @@ if ! command -v tmux &>/dev/null; then
 fi
 
 # hook スクリプトに実行権限を付与
-chmod +x "$PERMISSION_HOOK" "$CODEX_PERMISSION_HOOK" "$NOTIFICATION_HOOK"
+chmod +x "$PERMISSION_HOOK" "$CODEX_PERMISSION_HOOK" "$NOTIFICATION_HOOK" "$CODEX_GOAL_STATUS"
 
 # --- 環境変数の対話式設定 ---
 

@@ -33,12 +33,12 @@ Claude Code / Codex の承認待ちをスマホで操作するためのツール
 ## アーキテクチャ
 
 ```
-Claude Code / Codex (権限プロンプト / 処理完了)
+Claude Code / Codex (権限プロンプト / ターン・goal完了)
     │
     ▼
 hook/permission-request.sh  ── PreToolUse で発火、tmux 画面をパースしてサーバへ転送
 hook/codex-permission-request.sh ── PermissionRequest の構造化データと応答を中継
-hook/notification.sh        ── 処理完了などの通知を送信
+hook/notification.sh        ── ターン完了・Codex goal状態の通知を送信
     │
     ├──▶ Node.js Server (Express)  ── リクエスト管理 + APNs / Web Push 送信
     │       ├──▶ Apple Push Notification Service ──▶ iOS App / Apple Watch
@@ -131,6 +131,7 @@ prompt-relay/
 │   ├── common.sh               # 共通設定（サーバURL、認証、デュアルサーバ）
 │   ├── permission-request.sh   # 権限リクエストハンドラ（PreToolUse）
 │   ├── codex-permission-request.sh # Codex 権限リクエスト（PermissionRequest）
+│   ├── codex_goal_status.py    # Codex App Serverからgoal状態を読み取り
 │   ├── prompt_parser.py        # プロンプト検出・パースロジック
 │   ├── test_prompt_parser.py   # パーサーの単体テスト
 │   └── notification.sh         # 汎用通知送信（Notification）

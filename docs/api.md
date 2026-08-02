@@ -111,6 +111,23 @@
 - `response`: `"allow"` または `"deny"`
 - `send_key`: tmux に送信するキー（選択肢の番号）
 
+### Notification
+
+`POST /notify` のリクエストボディ:
+
+```json
+{
+  "title": "Done",
+  "message": "タスクが完了しました",
+  "hostname": "my-mac",
+  "tmux_target": "my-mac:codex:session-id",
+  "event_id": "codex-goal:session-id:complete:1785648418"
+}
+```
+
+- `tmux_target`: 任意。同じ実行元の通知をAPNs/Web Pushでまとめるために使用
+- `event_id`: 任意。1〜256文字の場合、同じルームで既に受理したIDは再配信しない。省略した旧hookは従来どおり毎回配信する
+
 ## WebSocket `/ws`
 
 リクエスト一覧の変更をリアルタイムで受信できる WebSocket エンドポイントです。

@@ -80,7 +80,15 @@ Codex TUIが `Yes, proceed`、`Yes, and don't ask again ...`、`No ...` の3択�
 5. 回答があれば Codex 仕様の decision JSON を stdout へ返す
 6. 接続失敗または `PROMPT_RELAY_TIMEOUT` 経過時は空出力で終了し、Codex標準の承認画面を表示
 
-`Stop` hook はターン完了時の通知に使います。
+`Stop` hook はターン完了時の通知に使います。Codexの永続goalがある場合は、
+`codex app-server` の公開 `thread/goal/get` APIで状態を確認します。
+
+- `active`: 自動継続中なので通知しない
+- `complete`: 「タスクが完了しました」と通知
+- `blocked` / `paused` / `usageLimited` / `budgetLimited`: 停止理由を通知
+- goalなし、またはAPIを利用できない場合: 「ターンが完了しました」と通知
+
+同じgoal状態から複数回`Stop`が発火しても、`event_id`によってサーバ側で重複配信を抑止します。
 
 ## モード設定
 
@@ -98,6 +106,14 @@ Codex TUIが `Yes, proceed`、`Yes, and don't ask again ...`、`No ...` の3択�
 export PROMPT_RELAY_CODEX_MODE=auto
 ```
 
+完了通知のgoal判定は既定で有効です。問題の切り分けなどで無効にする場合は
+`PROMPT_RELAY_CODEX_GOAL_AWARE=false`を設定します。無効時もタスク完了とは断定せず、
+「ターンが完了しました」と通知します。
+
+`codex`が通常の`PATH`にない環境では`PROMPT_RELAY_CODEX_BIN`に実行ファイルの絶対パスを、
+goal照会のタイムアウトを変更する場合は`PROMPT_RELAY_CODEX_GOAL_QUERY_TIMEOUT`に秒数
+（0.5〜8、既定4）を指定できます。
+
 ## 注意事項
 
 - tmux外の直接応答モードでは、リモート回答を待っている間はCodex標準の承認画面がまだ表示されません。
@@ -106,5 +122,6 @@ export PROMPT_RELAY_CODEX_MODE=auto
 - tmux外の直接応答モードではTUIを観測できないため、Automatic approval対象かどうかを事前判定できません。自動承認の通知抑止にはtmuxハイブリッドを使用してください。
 - Codex の hook はユーザー設定の `~/.codex/hooks.json` に登録します。プロジェクトローカル hook と違い、各リポジトリへ設定を複製する必要はありません。
 - hooks を明示的に無効化している場合は、`~/.codex/config.toml` の `[features]` で `hooks = true` にしてください。
+- goal照会は読み取り専用APIを使用し、Codex内部のSQLiteファイルやスキーマには依存しません。
 
 Codex hook の仕様は [OpenAI の Hooks ドキュメント](https://learn.chatgpt.com/docs/hooks) を参照してください。

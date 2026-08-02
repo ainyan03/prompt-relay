@@ -20,6 +20,20 @@ Codexをtmux内で起動すると、標準TUIとスマホの両方に承認要�
 
 Automatic approvalされた要求は、tmuxハイブリッドではTUIが表示されないためスマホにも通知されません。tmux外の直接応答モードはTUIを観測できず、この判定には対応しません。
 
+### Codexの永続goalで完了通知が繰り返される
+
+最新のprompt-relayはCodex App Serverの`thread/goal/get` APIを使い、`active`なgoalの
+中間ターン通知を抑止します。古いhookを使用していないか、次を確認してください。
+
+```bash
+codex --version
+codex app-server --help
+```
+
+goal APIを利用できない場合は安全側へフォールバックし、「処理が完了しました」ではなく
+「ターンが完了しました」と通知します。明示的にgoal判定を無効化している場合は、
+`PROMPT_RELAY_CODEX_GOAL_AWARE=false`をシェル設定から削除してください。
+
 ### アプリ画面には出るがiOS通知バナーが出ない
 
 Codexのセッション識別子を含む古いサーバでは、`apns-collapse-id` がAPNsの64バイト上限を超え、承認通知だけが拒否される場合があります。最新サーバは長いIDを固定長ハッシュへ変換します。サーバを再ビルドして再起動してください。
