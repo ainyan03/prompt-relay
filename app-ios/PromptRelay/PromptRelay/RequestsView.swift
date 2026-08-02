@@ -52,7 +52,8 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
     private var reconnectAttempt = 0
     private var isRunning = false
     private var isWebSocketConnected = false
-    private var isFetchInFlight = false
+    private var fetchTask: URLSessionDataTask?
+    private var activeFetchID: UUID?
     private var stateGeneration = 0
     var serverURL: String = ""
     var apiKey: String = ""
@@ -68,19 +69,34 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
 
     func configure(serverURL: String, apiKey: String, deviceToken: String) {
         let changed = self.serverURL != serverURL || self.apiKey != apiKey
+        if changed {
+            stateGeneration += 1
+            cancelFetch()
+            reconnectWorkItem?.cancel()
+            reconnectWorkItem = nil
+            fallbackWorkItem?.cancel()
+            fallbackWorkItem = nil
+            disconnectWebSocket()
+            applyRequests([])
+        }
         self.serverURL = serverURL
         self.apiKey = apiKey
         self.deviceToken = deviceToken
         if changed && isRunning {
-            disconnectWebSocket()
             reconnectAttempt = 0
-            fetch()
-            connectWebSocket()
+            if isConfigurationValid {
+                fetch()
+                connectWebSocket()
+            }
         }
     }
 
+    private var isConfigurationValid: Bool {
+        !serverURL.isEmpty && (8...128).contains(apiKey.count)
+    }
+
     func startUpdates() {
-        guard !isRunning, !serverURL.isEmpty, (8...128).contains(apiKey.count) else { return }
+        guard !isRunning, isConfigurationValid else { return }
         isRunning = true
         reconnectAttempt = 0
         fetch()
@@ -93,6 +109,7 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
         reconnectWorkItem = nil
         fallbackWorkItem?.cancel()
         fallbackWorkItem = nil
+        cancelFetch()
         disconnectWebSocket()
     }
 
@@ -121,7 +138,8 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
     }
 
     private func connectWebSocket() {
-        guard isRunning, webSocketTask == nil, let url = webSocketURL() else {
+        guard isRunning, isConfigurationValid else { return }
+        guard webSocketTask == nil, let url = webSocketURL() else {
             scheduleFallbackFetch()
             return
         }
@@ -210,21 +228,27 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
     }
 
     func fetch(completion: (() -> Void)? = nil) {
-        guard !isFetchInFlight,
+        guard activeFetchID == nil, isConfigurationValid,
               let url = URL(string: "\(serverURL)/permission-requests") else {
             completion?()
             return
         }
-        isFetchInFlight = true
+        let fetchID = UUID()
+        activeFetchID = fetchID
         isLoading = true
         let generationAtStart = stateGeneration
 
         var request = makeRequest(url: url)
         request.timeoutInterval = 10
-        URLSession.shared.dataTask(with: request) { data, _, error in
+        let task = URLSession.shared.dataTask(with: request) { data, _, error in
             let items = data.flatMap { try? JSONDecoder().decode([PermissionRequestItem].self, from: $0) }
             DispatchQueue.main.async {
-                self.isFetchInFlight = false
+                guard self.activeFetchID == fetchID else {
+                    completion?()
+                    return
+                }
+                self.activeFetchID = nil
+                self.fetchTask = nil
                 self.isLoading = false
                 // HTTP開始後にWebSocket更新を受けていた場合、古い応答で上書きしない。
                 if error == nil, let items, self.stateGeneration == generationAtStart {
@@ -232,7 +256,16 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
                 }
                 completion?()
             }
-        }.resume()
+        }
+        fetchTask = task
+        task.resume()
+    }
+
+    private func cancelFetch() {
+        activeFetchID = nil
+        fetchTask?.cancel()
+        fetchTask = nil
+        isLoading = false
     }
 
     private func applyRequests(_ items: [PermissionRequestItem]) {
@@ -469,6 +502,26 @@ struct RequestsView: View {
                 apiKey: appDelegate.apiKey,
                 deviceToken: newToken
             )
+        }
+        .onChange(of: appDelegate.serverURL) { newServerURL in
+            viewModel.configure(
+                serverURL: newServerURL,
+                apiKey: appDelegate.apiKey,
+                deviceToken: appDelegate.deviceToken
+            )
+            if scenePhase == .active && appDelegate.connectionEnabled {
+                viewModel.startUpdates()
+            }
+        }
+        .onChange(of: appDelegate.apiKey) { newApiKey in
+            viewModel.configure(
+                serverURL: appDelegate.serverURL,
+                apiKey: newApiKey,
+                deviceToken: appDelegate.deviceToken
+            )
+            if scenePhase == .active && appDelegate.connectionEnabled {
+                viewModel.startUpdates()
+            }
         }
         .onChange(of: appDelegate.connectionEnabled) { enabled in
             if enabled && scenePhase == .active {

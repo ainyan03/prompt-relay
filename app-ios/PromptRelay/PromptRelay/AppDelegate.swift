@@ -72,6 +72,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     private var lastSuccessfulRegistrationAt: Date?
     private var registrationInFlight = false
     private var pendingForcedRegistrationToken: String?
+    private var registrationGeneration = 0
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -169,12 +170,14 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - 接続トグル制御
     func setConnectionEnabled(_ enabled: Bool) {
+        guard connectionEnabled != enabled else { return }
         connectionEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "connectionEnabled")
         if enabled {
             guard !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") else { return }
             registerTokenWithServer(deviceToken, force: true)
         } else {
+            invalidateRegistration()
             // サーバからデバイストークンを解除（通知が届かなくなる）
             callUnregisterAPI()
             connectionStatus = "未接続"
@@ -183,26 +186,59 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - デバイストークン解除（fire and forget）
     private func callUnregisterAPI() {
-        guard isApiKeyValid, !serverURL.isEmpty, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error"),
+        unregisterToken(deviceToken, serverURL: serverURL, apiKey: apiKey)
+    }
+
+    private func unregisterToken(_ token: String, serverURL: String, apiKey: String) {
+        guard (8...128).contains(apiKey.count), !serverURL.isEmpty,
+              !token.isEmpty, !token.hasPrefix("Error"),
               let url = URL(string: "\(serverURL)/unregister") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        applyAuth(to: &request)
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": deviceToken])
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token])
         request.timeoutInterval = 5
-        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.connectionEnabled,
+                      self.serverURL == serverURL,
+                      self.apiKey == apiKey,
+                      self.deviceToken == token else { return }
+                // OFF直後に再度ONへ戻された場合は、遅れて完了した解除より後に
+                // 登録を再実行し、サーバ側の最終状態を現在の設定へ収束させる。
+                self.registerTokenWithServer(token, force: true)
+            }
+        }.resume()
+    }
+
+    private func invalidateRegistration() {
+        registrationGeneration += 1
+        registrationInFlight = false
+        pendingForcedRegistrationToken = nil
+        lastSuccessfulRegistrationAt = nil
     }
 
     // MARK: - ルームキー更新
     func updateApiKey(_ key: String) {
-        apiKey = key
+        guard apiKey != key else { return }
         if key.isEmpty {
             KeychainStore.remove()
         } else if !KeychainStore.save(key) {
             connectionStatus = "ルームキー保存エラー"
             return
         }
+
+        let oldApiKey = apiKey
+        let oldServerURL = serverURL
+        let token = deviceToken
+        invalidateRegistration()
+        if connectionEnabled {
+            unregisterToken(token, serverURL: oldServerURL, apiKey: oldApiKey)
+        }
+
+        apiKey = key
         UserDefaults.standard.removeObject(forKey: "apiKey")
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
             registerTokenWithServer(deviceToken, force: true)
@@ -211,6 +247,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - サーバにトークン登録
     func registerTokenWithServer(_ token: String, force: Bool = false) {
+        guard connectionEnabled else { return }
         guard isApiKeyValid else {
             connectionStatus = "ルームキーエラー"
             return
@@ -225,6 +262,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             return
         }
         registrationInFlight = true
+        let generation = registrationGeneration
+        let registrationServerURL = serverURL
+        let registrationApiKey = apiKey
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -235,6 +275,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         URLSession.shared.dataTask(with: request) { _, response, error in
             DispatchQueue.main.async {
+                guard self.registrationGeneration == generation else {
+                    // 設定変更や接続OFFより前の登録がサーバで完了していた場合も確実に解除する。
+                    self.unregisterToken(token, serverURL: registrationServerURL, apiKey: registrationApiKey)
+                    return
+                }
                 self.registrationInFlight = false
                 if let httpResponse = response as? HTTPURLResponse {
                     if httpResponse.statusCode == 200 {
@@ -245,13 +290,16 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                         // 認証エラー → 接続トグルを自動 OFF
                         self.connectionEnabled = false
                         UserDefaults.standard.set(false, forKey: "connectionEnabled")
+                        self.invalidateRegistration()
                     } else {
                         self.connectionStatus = "接続失敗: HTTP \(httpResponse.statusCode)"
                     }
                 } else {
                     self.connectionStatus = "接続失敗: \(error?.localizedDescription ?? "Unknown")"
                 }
-                if let pendingToken = self.pendingForcedRegistrationToken {
+                if self.connectionEnabled,
+                   self.registrationGeneration == generation,
+                   let pendingToken = self.pendingForcedRegistrationToken {
                     self.pendingForcedRegistrationToken = nil
                     self.registerTokenWithServer(pendingToken, force: true)
                 }
@@ -372,6 +420,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - サーバURL更新
     func updateServerURL(_ url: String) {
+        guard serverURL != url else { return }
+        let oldServerURL = serverURL
+        let oldApiKey = apiKey
+        let token = deviceToken
+        invalidateRegistration()
+        if connectionEnabled {
+            unregisterToken(token, serverURL: oldServerURL, apiKey: oldApiKey)
+        }
+
         serverURL = url
         UserDefaults.standard.set(url, forKey: "serverURL")
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
