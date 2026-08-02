@@ -38,7 +38,7 @@ class NotificationHelper(private val context: Context) {
             "承認要求",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "Claude Code の承認要求を通知します"
+            description = "Claude Code / Codex の承認要求を通知します"
             enableVibration(true)
         }
 

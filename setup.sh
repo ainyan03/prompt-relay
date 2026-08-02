@@ -1,12 +1,14 @@
 #!/bin/bash
 # prompt-relay セットアップスクリプト
-# Claude Code の hook 登録と環境変数の設定を自動で行います
+# Claude Code / Codex の hook 登録と環境変数の設定を自動で行います
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+CODEX_HOOKS="$HOME/.codex/hooks.json"
 PERMISSION_HOOK="$SCRIPT_DIR/hook/permission-request.sh"
+CODEX_PERMISSION_HOOK="$SCRIPT_DIR/hook/codex-permission-request.sh"
 NOTIFICATION_HOOK="$SCRIPT_DIR/hook/notification.sh"
 
 echo "=== prompt-relay セットアップ ==="
@@ -23,12 +25,12 @@ fi
 
 if ! command -v tmux &>/dev/null; then
   echo "警告: tmux がインストールされていません"
-  echo "  tmux がないと自動応答機能が使えません（通知の受信は可能）"
+  echo "  Claude Code の自動応答には tmux が必要です（Codex は tmux 不要）"
   echo ""
 fi
 
 # hook スクリプトに実行権限を付与
-chmod +x "$PERMISSION_HOOK" "$NOTIFICATION_HOOK"
+chmod +x "$PERMISSION_HOOK" "$CODEX_PERMISSION_HOOK" "$NOTIFICATION_HOOK"
 
 # --- 環境変数の対話式設定 ---
 
@@ -39,7 +41,7 @@ else
   SHELL_RC="$HOME/.bashrc"
 fi
 
-echo "[1/3] 環境変数の設定"
+echo "[1/4] 環境変数の設定"
 echo ""
 
 # SERVER_URL
@@ -105,7 +107,7 @@ fi
 
 # --- Claude Code settings.json への hook マージ ---
 
-echo "[2/3] Claude Code hook の登録"
+echo "[2/4] Claude Code hook の登録"
 echo ""
 
 mkdir -p "$HOME/.claude"
@@ -148,38 +150,94 @@ if [ ! -f "$CLAUDE_SETTINGS" ]; then
   echo "{\"hooks\": $HOOKS_JSON}" | jq . > "$CLAUDE_SETTINGS"
   echo "  $CLAUDE_SETTINGS を新規作成しました"
 else
-  # 既に hook が登録されているかチェック
-  EXISTING_PRE=$(jq -r '.hooks.PreToolUse // [] | .[] | .hooks // [] | .[] | .command' "$CLAUDE_SETTINGS" 2>/dev/null)
+  # 既存 hook を保持し、prompt-relay の不足分だけを追加する。
+  MERGED=$(jq --argjson new_hooks "$HOOKS_JSON" \
+    --arg permission "$PERMISSION_HOOK" --arg notification "$NOTIFICATION_HOOK" '
+    .hooks = (.hooks // {}) |
+    .hooks.PreToolUse = (.hooks.PreToolUse // []) |
+    .hooks.Notification = (.hooks.Notification // []) |
+    (if any(.hooks.PreToolUse[]?.hooks[]?; .command == $permission) then .
+     else .hooks.PreToolUse += $new_hooks.PreToolUse end) |
+    (if any(.hooks.Notification[]?.hooks[]?; .command == $notification) then .
+     else .hooks.Notification += $new_hooks.Notification end)
+  ' "$CLAUDE_SETTINGS")
+  echo "$MERGED" | jq . > "$CLAUDE_SETTINGS"
+  echo "  hook を登録・確認しました"
+fi
 
-  if echo "$EXISTING_PRE" | grep -q "permission-request.sh"; then
-    echo "  PreToolUse hook は既に登録されています — スキップ"
-  else
-    # hooks セクションをマージ
-    MERGED=$(jq --argjson new_hooks "$HOOKS_JSON" '
-      .hooks = (
-        (.hooks // {}) * {PreToolUse: $new_hooks.PreToolUse, Notification: $new_hooks.Notification}
-      )
-    ' "$CLAUDE_SETTINGS")
-    echo "$MERGED" | jq . > "$CLAUDE_SETTINGS"
-    echo "  hook を登録しました"
-  fi
+# --- Codex hooks.json への hook マージ ---
+
+echo ""
+echo "[3/4] Codex hook の登録"
+echo ""
+
+mkdir -p "$HOME/.codex"
+
+CODEX_HOOKS_JSON=$(cat <<HOOKS_EOF
+{
+  "PermissionRequest": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "$CODEX_PERMISSION_HOOK",
+          "statusMessage": "Waiting for Prompt Relay"
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "$NOTIFICATION_HOOK",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
+HOOKS_EOF
+)
+
+if [ ! -f "$CODEX_HOOKS" ]; then
+  echo "{\"hooks\": $CODEX_HOOKS_JSON}" | jq . > "$CODEX_HOOKS"
+  echo "  $CODEX_HOOKS を新規作成しました"
+else
+  MERGED=$(jq --argjson new_hooks "$CODEX_HOOKS_JSON" \
+    --arg permission "$CODEX_PERMISSION_HOOK" --arg notification "$NOTIFICATION_HOOK" '
+    .hooks = (.hooks // {}) |
+    .hooks.PermissionRequest = (.hooks.PermissionRequest // []) |
+    .hooks.Stop = (.hooks.Stop // []) |
+    (if any(.hooks.PermissionRequest[]?.hooks[]?; .command == $permission) then .
+     else .hooks.PermissionRequest += $new_hooks.PermissionRequest end) |
+    (if any(.hooks.Stop[]?.hooks[]?; .command == $notification) then .
+     else .hooks.Stop += $new_hooks.Stop end)
+  ' "$CODEX_HOOKS")
+  echo "$MERGED" | jq . > "$CODEX_HOOKS"
+  echo "  hook を登録・確認しました"
 fi
 
 # --- 完了 ---
 
 echo ""
-echo "[3/3] セットアップ完了"
+echo "[4/4] セットアップ完了"
 echo ""
 echo "  Hook スクリプト:"
-echo "    PreToolUse:   $PERMISSION_HOOK"
-echo "    Notification: $NOTIFICATION_HOOK"
+echo "    Claude PreToolUse:      $PERMISSION_HOOK"
+echo "    Codex PermissionRequest: $CODEX_PERMISSION_HOOK"
+echo "    完了通知:                $NOTIFICATION_HOOK"
 echo ""
 echo "  設定ファイル:"
 echo "    $CLAUDE_SETTINGS"
+echo "    $CODEX_HOOKS"
 echo "    $SHELL_RC"
 echo ""
 echo "  次のステップ:"
 echo "    1. source $SHELL_RC"
-echo "    2. Claude Code を再起動"
-echo "    3. アプリでサーバ URL とルームキーを設定"
+echo "    2. Claude Code / Codex を再起動"
+echo "    3. Codex では /hooks を開いて新しい hook を確認・信頼"
+echo "    4. アプリでサーバ URL とルームキーを設定"
 echo ""

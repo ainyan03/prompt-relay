@@ -1,5 +1,23 @@
 # トラブルシューティング
 
+## Codex で通知されない
+
+Codex を再起動して `/hooks` を開き、`PermissionRequest` と `Stop` の prompt-relay hook が読み込まれ、信頼済みになっているか確認してください。未信頼または定義変更後の command hook は実行されません。
+
+```bash
+python3 -m json.tool ~/.codex/hooks.json
+ls -la /path/to/prompt-relay/hook/codex-permission-request.sh
+```
+
+`~/.codex/config.toml` で hooks を無効にしている場合は、次のように有効化します。
+
+```toml
+[features]
+hooks = true
+```
+
+Codex はリモート回答を待っている間、標準の承認画面をまだ表示しません。サーバへ接続できない場合は即座に、応答がない場合は `PROMPT_RELAY_TIMEOUT`（既定 120 秒）の経過後に標準画面へフォールバックします。
+
 ## 通知が来ない
 
 ### サーバが起動していない / URL が間違っている

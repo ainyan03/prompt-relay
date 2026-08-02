@@ -2,7 +2,13 @@
 
 import json
 import pytest
-from prompt_parser import detect_prompt, parse_pane, parse_response
+from prompt_parser import (
+    codex_decision,
+    detect_prompt,
+    parse_codex_request,
+    parse_pane,
+    parse_response,
+)
 
 
 # ============================================================
@@ -334,3 +340,66 @@ class TestParseResponse:
     def test_none_input(self):
         resp = parse_response(None)
         assert resp == 'none||'
+
+
+# ============================================================
+# Codex PermissionRequest テスト
+# ============================================================
+
+class TestCodexPermissionRequest:
+    def test_bash_request(self):
+        input_data = json.dumps({
+            'hook_event_name': 'PermissionRequest',
+            'session_id': 'session-123',
+            'turn_id': 'turn-456',
+            'tool_name': 'Bash',
+            'tool_input': {
+                'command': 'curl https://example.com',
+                'description': '外部サイトへ接続します',
+            },
+        })
+        result = parse_codex_request(input_data, 'devbox', 120)
+
+        assert result['tool_name'] == 'Bash'
+        assert result['header'] == 'Codex: Bash'
+        assert result['description'] == '外部サイトへ接続します'
+        assert result['choices'] == [
+            {'number': 1, 'text': 'Allow'},
+            {'number': 2, 'text': 'Deny'},
+        ]
+        assert result['has_tmux'] is False
+        assert result['can_respond'] is True
+        assert result['hostname'] == 'devbox:Codex'
+        assert result['tmux_target'].startswith('devbox:codex:session-123:turn-456:')
+        assert result['timeout'] == 120
+
+    def test_command_is_description_fallback(self):
+        result = parse_codex_request('{"tool_name":"Bash","tool_input":{"command":"ls"}}')
+        assert result['description'] == 'ls'
+
+    def test_invalid_json_is_safe(self):
+        result = parse_codex_request('not-json')
+        assert result['tool_name'] == 'Permission'
+        assert result['tool_input'] == {}
+
+    def test_target_is_stable_for_same_request(self):
+        data = '{"session_id":"s","turn_id":"t","tool_input":{"b":2,"a":1}}'
+        first = parse_codex_request(data, 'host')['tmux_target']
+        second = parse_codex_request(data, 'host')['tmux_target']
+        assert first == second
+
+    def test_allow_decision(self):
+        assert codex_decision('allow') == {
+            'hookSpecificOutput': {
+                'hookEventName': 'PermissionRequest',
+                'decision': {'behavior': 'allow'},
+            }
+        }
+
+    def test_deny_decision(self):
+        result = codex_decision('deny')
+        assert result['hookSpecificOutput']['decision']['behavior'] == 'deny'
+        assert result['hookSpecificOutput']['decision']['message']
+
+    def test_unknown_decision(self):
+        assert codex_decision('cancelled') is None

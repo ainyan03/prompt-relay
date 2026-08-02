@@ -48,6 +48,7 @@
     { "number": 3, "text": "No" }
   ],
   "has_tmux": true,
+  "can_respond": true,
   "tmux_target": "hostname:session:window.pane",
   "hostname": "my-mac",
   "timeout": 120
@@ -55,6 +56,7 @@
 ```
 
 - `timeout`: リクエストのタイムアウト秒数（オプション）。省略時はサーバの `REQUEST_TIMEOUT` がデフォルトとして使われる
+- `can_respond`: tmux 以外の構造化 hook から応答できる場合は `true`。Codex の `PermissionRequest` hook が使用する
 
 **POST `/permission-request` レスポンス:**
 

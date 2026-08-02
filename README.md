@@ -2,14 +2,14 @@
 
 > **⚠ 本ツールは LAN / VPN / Tailscale 等の信頼できるネットワーク内での利用を前提としています。インターネットに直接公開するサーバでの運用は想定していません。** 詳しくは [SECURITY.md](SECURITY.md) を参照してください。
 
-Claude Code の承認待ちをスマホで操作するためのツールです。
+Claude Code / Codex の承認待ちをスマホで操作するためのツールです。
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) はターミナル上で動作する AI コーディングアシスタントです。ファイルの変更やコマンドの実行前にユーザーの承認を求める仕組みになっており、承認待ちが発生するたびにターミナルに戻って手動で応答する必要があります。prompt-relay を使うと、この承認操作をスマートフォンからリモートで行えるようになります。
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) と [Codex](https://developers.openai.com/codex/) は、ファイル変更やコマンド実行前にユーザーへ承認を求めることがあります。prompt-relay を使うと、この承認操作をスマートフォンからリモートで行えます。
 
 ## できること
 
-- Claude Code が承認待ちになるとスマホにプッシュ通知
-- 通知から承認・拒否を選択するとターミナルに自動入力
+- Claude Code / Codex が承認待ちになるとスマホにプッシュ通知
+- 通知から承認・拒否を選択すると Claude Code / Codex に自動反映
 - プランモード等で連続する承認プロンプトにも対応（自動で次のプロンプトを検出）
 - 処理完了時にも通知でお知らせ
 - 同一ターミナルの通知は最新1件に自動上書き（通知の溜まりを防止）
@@ -23,7 +23,8 @@ Claude Code の承認待ちをスマホで操作するためのツールです�
 
 ## 必要なもの
 
-- tmux 上で Claude Code を実行する環境
+- Claude Code を使う場合: tmux 上で実行する環境
+- Codex を使う場合: lifecycle hooks 対応版（tmux は不要）
 - Python 3（フックスクリプトのプロンプト検出・パースに使用）
 - Node.js サーバ（ローカルまたは LAN 内、Docker 対応）
 - Android アプリを使う場合: Android 8.0 以上
@@ -32,10 +33,11 @@ Claude Code の承認待ちをスマホで操作するためのツールです�
 ## アーキテクチャ
 
 ```
-Claude Code (権限プロンプト / 処理完了)
+Claude Code / Codex (権限プロンプト / 処理完了)
     │
     ▼
 hook/permission-request.sh  ── PreToolUse で発火、tmux 画面をパースしてサーバへ転送
+hook/codex-permission-request.sh ── PermissionRequest の構造化データと応答を中継
 hook/notification.sh        ── 処理完了などの通知を送信
     │
     ├──▶ Node.js Server (Express)  ── リクエスト管理 + APNs / Web Push 送信
@@ -48,12 +50,12 @@ hook/notification.sh        ── 処理完了などの通知を送信
 Server へ応答を返送（先に応答した方を採用）
     │
     ▼
-hook が応答をポーリング → tmux send-keys で入力
+Claude: tmux send-keys で入力 / Codex: hook の allow・deny JSON を返却
 ```
 
 ## クイックセットアップ
 
-リポジトリをクローンしてセットアップスクリプトを実行するだけで、Claude Code の hook 登録と環境変数の設定が完了します。
+リポジトリをクローンしてセットアップスクリプトを実行すると、Claude Code と Codex の hook 登録および環境変数の設定が完了します。
 
 ```bash
 git clone <repo-url> ~/prompt-relay
@@ -81,6 +83,7 @@ cd ~/prompt-relay
 |---|---|
 | [サーバセットアップ](docs/setup-server.md) | Node.js サーバ、.env 設定、API 認証、Docker デプロイ、マルチホスト・デュアルサーバ構成 |
 | [Claude Code フック設定](docs/setup-hooks.md) | settings.json の設定、フックの動作原理 |
+| [Codex フック設定](docs/setup-codex.md) | hooks.json の設定、PermissionRequest の動作原理 |
 | [PWA（ブラウザ）](docs/setup-pwa.md) | HTTPS 証明書、PWA インストール（Android / iOS / Tailscale） |
 | [iOS アプリ](docs/setup-ios.md) | Apple Developer Portal 設定、Xcode ビルド |
 | [Android アプリ](docs/setup-android.md) | Android Studio ビルド、通知設定 |
@@ -90,17 +93,17 @@ cd ~/prompt-relay
 
 ## 設計思想
 
-prompt-relay は Claude Code のターミナル操作を**補完する**ツールです。**ターミナル操作の置き換えが目的ではありません**。
+prompt-relay は Claude Code / Codex の標準承認操作を**補完する**ツールです。**標準操作の置き換えが目的ではありません**。
 
 ### フェイルセーフ設計
 
-権限プロンプトの検出には `PreToolUse` フックを使用しています。フック本体は即座に `exit 0` し、全処理はバックグラウンドで実行されるため、Claude Code の動作をブロックしません。
+Claude Code では `PreToolUse` フックと tmux の画面検出を使用します。Codex では `PermissionRequest` フックがサーバ応答を待ち、応答時だけ構造化された `allow` / `deny` を返します。接続失敗やタイムアウト時は空出力で終了し、Codex 標準の承認画面へフォールバックします。
 
-- フックがエラーで終了しても、Claude Code はターミナルで承認プロンプトを表示し続ける
-- サーバが停止・障害状態でも、Claude Code の動作は止まらない
+- フックがエラーで終了しても、標準の承認操作を利用できる
+- サーバが停止・障害状態でも、Claude Code / Codex の処理を継続できる
 - スマートフォンアプリが機能しなくても、ターミナルでの手動承認は常に可能
 
-「ツールが使えないせいで Claude Code が止まった」という事態が構造上起きない設計です。
+中継が利用できない場合に AI コーディングツールまで利用不能にならない設計です。
 
 ### 接続のオン・オフ
 
@@ -124,9 +127,10 @@ prompt-relay/
 │   ├── public/             # PWA フロントエンド
 │   ├── certs/              # APNs 秘密鍵 (.p8) + 自動生成 HTTPS 証明書
 │   └── Dockerfile          # Docker イメージビルド
-├── hook/                   # Claude Code フックスクリプト
+├── hook/                   # Claude Code / Codex フックスクリプト
 │   ├── common.sh               # 共通設定（サーバURL、認証、デュアルサーバ）
 │   ├── permission-request.sh   # 権限リクエストハンドラ（PreToolUse）
+│   ├── codex-permission-request.sh # Codex 権限リクエスト（PermissionRequest）
 │   ├── prompt_parser.py        # プロンプト検出・パースロジック
 │   ├── test_prompt_parser.py   # パーサーの単体テスト
 │   └── notification.sh         # 汎用通知送信（Notification）
@@ -144,18 +148,18 @@ prompt-relay/
 1. **サーバを起動する**
    - Docker: `docker compose up -d`
    - ローカル: `cd server && npm ci && npm run dev`
-2. **tmux セッション内で** Claude Code を起動
+2. Claude Code は **tmux セッション内で**、Codex は通常どおり起動
 3. iOS アプリまたは PWA (`http://localhost:3939/`) を開き、接続設定を行う
-4. Claude Code がツール実行の許可を求めると、フックスクリプトが発火
+4. Claude Code / Codex がツール実行の許可を求めると、フックスクリプトが発火
 5. サーバ経由で iOS / PWA にプッシュ通知が届く
 6. 通知から直接応答、または アプリを開いて応答
-7. フックスクリプトが応答を受け取り、tmux 経由で入力
+7. フックスクリプトが応答を受け取り、Claude は tmux、Codex は hook 応答で反映
 8. tmux 側で手動回答した場合は、アプリ側が自動的に「Cancelled」に更新
 9. 処理が完了すると完了通知が届く
 
 ## 注意事項
 
-- **tmux が必須**: `tmux send-keys` で応答を送信するため、tmux セッション外では自動応答が機能しません
+- **Claude Code では tmux が必須**: `tmux send-keys` で応答を送信します。Codex は構造化 hook 応答を使うため tmux 不要です
 - **インメモリストレージ**: サーバ再起動で履歴クリア。未応答リクエストは `REQUEST_TIMEOUT` 秒（デフォルト 120）でタイムアウト、`REQUEST_CLEANUP` 秒（デフォルト 300）で自動削除。`MAX_HISTORY` で履歴保持件数を制限可能
 - **マルチデバイス**: APNs / Web Push それぞれ最大 4 台（`MAX_DEVICES` で変更可）。上限超過時は最後に通知送信が成功した時刻が最も古いデバイスを自動淘汰
 - **通知の即時配信**: 同一ターミナルからの通知は APNs collapse-id / Web Push tag で管理。毎回ユニークな collapse-id を使用し、APNs の「更新」扱いによる配信遅延を回避

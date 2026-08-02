@@ -1,5 +1,7 @@
 # Claude Code フック設定
 
+Codex の設定は [Codex フック設定](setup-codex.md) を参照してください。
+
 ## settings.json の設定
 
 `~/.claude/settings.json` にフックを追加:

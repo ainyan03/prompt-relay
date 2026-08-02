@@ -8,8 +8,11 @@ CLI インターフェース:
   python3 prompt_parser.py detect <pane_content>
   python3 prompt_parser.py parse <stdin_json> <pane_content> [tmux_target] [hostname] [timeout]
   python3 prompt_parser.py response <response_json>
+  python3 prompt_parser.py codex-parse <stdin_json> [hostname] [timeout]
+  python3 prompt_parser.py codex-decision <allow|deny>
 """
 
+import hashlib
 import json
 import re
 import sys
@@ -227,6 +230,75 @@ def parse_response(response_json: str) -> str:
         return f'ok|{sk}|{resp}'
 
 
+def parse_codex_request(stdin_data: str, hostname: str | None = None,
+                        timeout: int | None = None) -> dict:
+    """Codex PermissionRequest の入力をサーバ共通形式へ変換する。"""
+    try:
+        d = json.loads(stdin_data) if stdin_data else {}
+    except json.JSONDecodeError:
+        d = {}
+
+    tool_name = d.get('tool_name') or 'Permission'
+    tool_input = d.get('tool_input')
+    if not isinstance(tool_input, dict):
+        tool_input = {'value': tool_input} if tool_input is not None else {}
+
+    description = tool_input.get('description')
+    if not isinstance(description, str) or not description.strip():
+        command = tool_input.get('command')
+        if isinstance(command, str) and command.strip():
+            description = command
+        elif tool_input:
+            description = json.dumps(tool_input, ensure_ascii=False, separators=(',', ':'))
+        else:
+            description = ''
+
+    # 並行した承認要求を区別しつつ、同じ要求の再送は置換できる安定 ID にする。
+    canonical_input = json.dumps(tool_input, ensure_ascii=False, sort_keys=True,
+                                 separators=(',', ':'))
+    digest = hashlib.sha256(canonical_input.encode()).hexdigest()[:12]
+    session_id = str(d.get('session_id') or 'unknown')[:24]
+    turn_id = str(d.get('turn_id') or 'unknown')[:24]
+    host = hostname or 'unknown'
+
+    result = {
+        'tool_name': tool_name,
+        'tool_input': tool_input,
+        'message': description,
+        'header': f'Codex: {tool_name}',
+        'description': description,
+        'prompt_question': 'Codex の実行を許可しますか？',
+        'choices': [
+            {'number': 1, 'text': 'Allow'},
+            {'number': 2, 'text': 'Deny'},
+        ],
+        # tmux は使わないが、Codex のフックを通して応答可能。
+        'has_tmux': False,
+        'can_respond': True,
+        'tmux_target': f'{host}:codex:{session_id}:{turn_id}:{digest}',
+        'hostname': f'{host}:Codex',
+        'client': 'codex',
+    }
+    if timeout is not None and timeout > 0:
+        result['timeout'] = timeout
+    return result
+
+
+def codex_decision(response: str) -> dict | None:
+    """サーバ応答を Codex PermissionRequest フックの出力へ変換する。"""
+    if response not in ('allow', 'deny'):
+        return None
+    decision = {'behavior': response}
+    if response == 'deny':
+        decision['message'] = 'Denied from Prompt Relay.'
+    return {
+        'hookSpecificOutput': {
+            'hookEventName': 'PermissionRequest',
+            'decision': decision,
+        }
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print(f'Usage: {sys.argv[0]} <detect|parse|response> [args...]', file=sys.stderr)
@@ -254,6 +326,23 @@ def main():
     elif cmd == 'response':
         resp_json = sys.argv[2] if len(sys.argv) > 2 else ''
         print(parse_response(resp_json))
+
+    elif cmd == 'codex-parse':
+        stdin_data = sys.argv[2] if len(sys.argv) > 2 else '{}'
+        hostname = sys.argv[3] if len(sys.argv) > 3 else None
+        timeout_str = sys.argv[4] if len(sys.argv) > 4 else None
+        try:
+            timeout_val = int(timeout_str) if timeout_str else None
+        except ValueError:
+            timeout_val = None
+        print(json.dumps(parse_codex_request(stdin_data, hostname, timeout_val),
+                         ensure_ascii=False))
+
+    elif cmd == 'codex-decision':
+        response = sys.argv[2] if len(sys.argv) > 2 else ''
+        result = codex_decision(response)
+        if result is not None:
+            print(json.dumps(result))
 
     else:
         print(f'Unknown command: {cmd}', file=sys.stderr)

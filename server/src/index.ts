@@ -267,7 +267,7 @@ app.post('/unregister-web', (req, res) => {
 // 権限リクエスト受信（フックスクリプトから）
 app.post('/permission-request', async (req, res) => {
   const roomKey = req.roomKey!;
-  const { tool_name, tool_input, message, header, description, prompt_question, choices, has_tmux, tmux_target, hostname, timeout } = req.body;
+  const { tool_name, tool_input, message, header, description, prompt_question, choices, has_tmux, can_respond, tmux_target, hostname, timeout } = req.body;
   const id = randomBytes(4).toString('hex');
 
   const toolDisplay = tool_name || 'Unknown';
@@ -291,8 +291,9 @@ app.post('/permission-request', async (req, res) => {
     detailText += `\n${prompt_question}`;
   }
 
-  // 非tmux の場合、注記を追加
-  if (has_tmux === false) {
+  // tmux も構造化応答フックも使えない場合、注記を追加
+  const canRespond = can_respond === true || has_tmux !== false;
+  if (!canRespond) {
     detailText += '\n⚠ tmux未経由のためWatch応答不可';
   }
 
@@ -329,8 +330,8 @@ app.post('/permission-request', async (req, res) => {
 
   const notifTitle = hostname ? `承認待ち [${hostname}]` : '承認待ち';
 
-  // 通知カテゴリ: tmux 経由でない場合はアクションボタンなしの通知
-  const category = has_tmux !== false ? 'PERMISSION_REQUEST' : undefined;
+  // Codex は tmux 不使用でも PermissionRequest フック経由で応答できる。
+  const category = canRespond ? 'PERMISSION_REQUEST' : undefined;
 
   // APNs でプッシュ通知送信（非同期、fire-and-forget）
   trySendApnsNotification(roomKey, {
@@ -430,7 +431,7 @@ app.post('/permission-request/:id/respond', (req, res) => {
   trySendApnsSilent(roomKey, { type: 'dismiss', request_id: req.params.id });
 });
 
-// フックスクリプトからのキャンセル（tmux 側で手動回答された場合）
+// フックスクリプトからのキャンセル（手動回答・タイムアウト時）
 app.post('/permission-request/:id/cancel', (req, res) => {
   const roomKey = req.roomKey!;
   const ok = cancelRequest(roomKey, req.params.id);
@@ -438,7 +439,7 @@ app.post('/permission-request/:id/cancel', (req, res) => {
     res.status(404).json({ error: 'not found or already responded' });
     return;
   }
-  console.log(`[cancel] ${req.params.id}: manually answered in tmux`);
+  console.log(`[cancel] ${req.params.id}: hook stopped waiting`);
   res.json({ ok: true });
 
   // WebSocket クライアントにブロードキャスト

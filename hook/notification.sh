@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Code Notification フック（idle_prompt 等）
+# Claude Code Notification / Codex Stop フック
 # 単純な通知をローカルサーバ経由で送信
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,19 +27,35 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit()
-print(d.get('notification_type') or d.get('tool_name') or 'idle_prompt')
+print(d.get('hook_event_name') or d.get('notification_type') or d.get('tool_name') or 'idle_prompt')
 " 2>/dev/null <<< "$INPUT")
+
+# Codex は tmux 外でも動くため、セッション ID を通知のまとめ先に使う。
+if [ "$HOOK_EVENT" = "Stop" ]; then
+  CODEX_SESSION=$(/usr/bin/env python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('session_id') or '')
+except Exception:
+    pass
+" 2>/dev/null <<< "$INPUT")
+  [ -n "$CODEX_SESSION" ] && TMUX_TARGET_ID="${HOSTNAME_SHORT}:codex:${CODEX_SESSION}"
+fi
 
 if [ -z "$HOOK_EVENT" ] || [ "$HOOK_EVENT" = "permission_prompt" ]; then
   # permission_prompt は permission-request.sh で処理されるため、ここでは無視
   # /notify は category なしでボタンなし通知になり、承認操作ができない
   # HOOK_EVENT が空の場合は JSON パース失敗のため送信しない
   exit 0
-elif [ "$HOOK_EVENT" = "idle_prompt" ]; then
+elif [ "$HOOK_EVENT" = "idle_prompt" ] || [ "$HOOK_EVENT" = "Stop" ]; then
   TITLE="Done"
   MESSAGE="処理が完了しました"
 else
-  TITLE="Claude Code"
+  if [[ "$HOOK_EVENT" == *Codex* ]]; then
+    TITLE="Codex"
+  else
+    TITLE="Claude Code"
+  fi
   MESSAGE="${HOOK_EVENT}"
 fi
 
