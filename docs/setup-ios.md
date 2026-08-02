@@ -36,3 +36,11 @@ cp app-ios/PromptRelay/PromptRelay/Config.swift.example app-ios/PromptRelay/Prom
 5. **Push Notifications** capability が有効であることを確認
 6. **Time Sensitive Notifications** capability が有効であることを確認
 7. 実機にビルド・インストール
+
+## 通信と省電力動作
+
+- リクエスト画面は、アプリがフォアグラウンドの間だけ `/ws` へ接続します。バックグラウンド移行時は接続を閉じます。
+- WebSocket切断中は指数バックオフで再接続し、一覧取得は30秒間隔へフォールバックします。画面を下へ引くと手動更新できます。
+- APNsデバイストークンの再登録は、設定変更時を除き15分以内の重複送信を省略します。
+- ルームキーはKeychainへ保存します。旧バージョンの `UserDefaults` にあるキーは初回起動時に自動移行します。
+- LAN内HTTPとの互換性のためATSのローカルネットワーク例外を使用します。外部ネットワーク経由ではHTTPSを推奨します。

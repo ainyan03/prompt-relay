@@ -97,10 +97,16 @@
 
 ```json
 {
-  "response": "allow",
-  "send_key": "1"
+  "choice": 1,
+  "source": "ios-app",
+  "device_token": "APNs device token"
 }
 ```
+
+- `choice`: 動的選択肢の番号。レガシークライアントは `response` に `allow` / `deny` / `allow_all` を指定可能
+- `device_token`: 任意。回答元iPhoneが通知をローカル削除した場合、同じ端末へのdismissサイレントプッシュを省略するために使用
+
+`GET /permission-request/:id/response` の応答フィールド:
 
 - `response`: `"allow"` または `"deny"`
 - `send_key`: tmux に送信するキー（選択肢の番号）

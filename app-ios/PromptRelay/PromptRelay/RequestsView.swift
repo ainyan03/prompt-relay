@@ -1,6 +1,7 @@
 import SwiftUI
+import UserNotifications
 
-struct ChoiceItem: Codable {
+struct ChoiceItem: Codable, Equatable {
     let number: Int
     let text: String
 
@@ -10,7 +11,7 @@ struct ChoiceItem: Codable {
     }
 }
 
-struct PermissionRequestItem: Identifiable, Codable {
+struct PermissionRequestItem: Identifiable, Codable, Equatable {
     let id: String
     let tool_name: String
     let message: String
@@ -35,13 +36,27 @@ struct PermissionRequestItem: Identifiable, Codable {
     }
 }
 
-class RequestsViewModel: ObservableObject {
+private struct WebSocketUpdate: Decodable {
+    let type: String
+    let requests: [PermissionRequestItem]
+}
+
+class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var requests: [PermissionRequestItem] = []
     @Published var isLoading = false
 
-    private var timer: Timer?
+    private var webSocketSession: URLSession?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var fallbackWorkItem: DispatchWorkItem?
+    private var reconnectAttempt = 0
+    private var isRunning = false
+    private var isWebSocketConnected = false
+    private var isFetchInFlight = false
+    private var stateGeneration = 0
     var serverURL: String = ""
     var apiKey: String = ""
+    var deviceToken: String = ""
 
     private func makeRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
@@ -51,67 +66,271 @@ class RequestsViewModel: ObservableObject {
         return request
     }
 
-    func startPolling() {
-        fetch()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.fetch()
+    func configure(serverURL: String, apiKey: String, deviceToken: String) {
+        let changed = self.serverURL != serverURL || self.apiKey != apiKey
+        self.serverURL = serverURL
+        self.apiKey = apiKey
+        self.deviceToken = deviceToken
+        if changed && isRunning {
+            disconnectWebSocket()
+            reconnectAttempt = 0
+            fetch()
+            connectWebSocket()
         }
     }
 
-    func stopPolling() {
-        timer?.invalidate()
-        timer = nil
+    func startUpdates() {
+        guard !isRunning, !serverURL.isEmpty, (8...128).contains(apiKey.count) else { return }
+        isRunning = true
+        reconnectAttempt = 0
+        fetch()
+        connectWebSocket()
     }
 
-    func fetch() {
-        guard let url = URL(string: "\(serverURL)/permission-requests") else { return }
+    func stopUpdates() {
+        isRunning = false
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        fallbackWorkItem?.cancel()
+        fallbackWorkItem = nil
+        disconnectWebSocket()
+    }
 
-        let request = makeRequest(url: url)
-        URLSession.shared.dataTask(with: request) { data, _, error in
-            guard let data = data, error == nil else { return }
-            if let items = try? JSONDecoder().decode([PermissionRequestItem].self, from: data) {
-                DispatchQueue.main.async {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        self.requests = items
-                    }
+    func refresh() async {
+        await withCheckedContinuation { continuation in
+            fetch {
+                continuation.resume()
+            }
+        }
+    }
+
+    private func webSocketURL() -> URL? {
+        guard var components = URLComponents(string: serverURL),
+              let scheme = components.scheme?.lowercased() else { return nil }
+        switch scheme {
+        case "http": components.scheme = "ws"
+        case "https": components.scheme = "wss"
+        case "ws", "wss": break
+        default: return nil
+        }
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = basePath.isEmpty ? "/ws" : "/\(basePath)/ws"
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    private func connectWebSocket() {
+        guard isRunning, webSocketTask == nil, let url = webSocketURL() else {
+            scheduleFallbackFetch()
+            return
+        }
+
+        var request = makeRequest(url: url)
+        request.timeoutInterval = 10
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 10
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        let task = session.webSocketTask(with: request)
+        webSocketSession = session
+        webSocketTask = task
+        task.resume()
+        receiveNext(on: task)
+    }
+
+    private func receiveNext(on task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.isRunning, self.webSocketTask === task else { return }
+                switch result {
+                case .success(let message):
+                    self.handleWebSocketMessage(message)
+                    self.receiveNext(on: task)
+                case .failure(let error):
+                    print("[PromptRelay] WebSocket receive failed: \(error.localizedDescription)")
+                    self.handleWebSocketDisconnect()
                 }
+            }
+        }
+    }
+
+    private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
+        let data: Data
+        switch message {
+        case .data(let value): data = value
+        case .string(let value): data = Data(value.utf8)
+        @unknown default: return
+        }
+        guard let update = try? JSONDecoder().decode(WebSocketUpdate.self, from: data),
+              update.type == "update" else { return }
+        stateGeneration += 1
+        applyRequests(update.requests)
+    }
+
+    private func handleWebSocketDisconnect() {
+        disconnectWebSocket()
+        scheduleReconnect()
+        scheduleFallbackFetch()
+    }
+
+    private func disconnectWebSocket() {
+        isWebSocketConnected = false
+        let task = webSocketTask
+        webSocketTask = nil
+        task?.cancel(with: .goingAway, reason: nil)
+        webSocketSession?.invalidateAndCancel()
+        webSocketSession = nil
+    }
+
+    private func scheduleReconnect() {
+        guard isRunning, reconnectWorkItem == nil else { return }
+        let delay = min(pow(2.0, Double(reconnectAttempt)), 30.0)
+        reconnectAttempt = min(reconnectAttempt + 1, 5)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.reconnectWorkItem = nil
+            self.connectWebSocket()
+        }
+        reconnectWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private func scheduleFallbackFetch() {
+        guard isRunning, !isWebSocketConnected, fallbackWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.fallbackWorkItem = nil
+            guard self.isRunning, !self.isWebSocketConnected else { return }
+            self.fetch()
+            self.scheduleFallbackFetch()
+        }
+        fallbackWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: item)
+    }
+
+    func fetch(completion: (() -> Void)? = nil) {
+        guard !isFetchInFlight,
+              let url = URL(string: "\(serverURL)/permission-requests") else {
+            completion?()
+            return
+        }
+        isFetchInFlight = true
+        isLoading = true
+        let generationAtStart = stateGeneration
+
+        var request = makeRequest(url: url)
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            let items = data.flatMap { try? JSONDecoder().decode([PermissionRequestItem].self, from: $0) }
+            DispatchQueue.main.async {
+                self.isFetchInFlight = false
+                self.isLoading = false
+                // HTTP開始後にWebSocket更新を受けていた場合、古い応答で上書きしない。
+                if error == nil, let items, self.stateGeneration == generationAtStart {
+                    self.applyRequests(items)
+                }
+                completion?()
             }
         }.resume()
     }
 
-    private func postJSON(url: URL, body: [String: Any]) {
+    private func applyRequests(_ items: [PermissionRequestItem]) {
+        guard items != requests else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            requests = items
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        DispatchQueue.main.async {
+            guard self.isRunning, self.webSocketTask === webSocketTask else { return }
+            self.isWebSocketConnected = true
+            self.reconnectAttempt = 0
+            self.reconnectWorkItem?.cancel()
+            self.reconnectWorkItem = nil
+            self.fallbackWorkItem?.cancel()
+            self.fallbackWorkItem = nil
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        DispatchQueue.main.async {
+            guard self.isRunning, self.webSocketTask === webSocketTask else { return }
+            self.handleWebSocketDisconnect()
+        }
+    }
+
+    private func postJSON(url: URL, body: [String: Any], requestId: String) {
         var request = makeRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 5
+        var requestBody = body
+        if !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
+            requestBody["device_token"] = deviceToken
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: requestBody)
 
         URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+            let succeeded = (response as? HTTPURLResponse)?.statusCode == 200
             if let error = error {
                 print("[PromptRelay] POST failed: \(error.localizedDescription)")
             } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 print("[PromptRelay] POST error: HTTP \(http.statusCode)")
             }
             DispatchQueue.main.async {
-                self?.fetch()
+                guard let self else { return }
+                if succeeded {
+                    self.removeDeliveredNotification(requestId: requestId)
+                }
+                if !self.isWebSocketConnected {
+                    self.fetch()
+                }
             }
         }.resume()
     }
 
     func respondWithChoice(id: String, choice: Int) {
         guard let url = URL(string: "\(serverURL)/permission-request/\(id)/respond") else { return }
-        postJSON(url: url, body: ["choice": choice, "source": "ios-app"])
+        postJSON(url: url, body: ["choice": choice, "source": "ios-app"], requestId: id)
     }
 
     // レガシー（choices がない場合のフォールバック）
     func respond(id: String, response: String) {
         guard let url = URL(string: "\(serverURL)/permission-request/\(id)/respond") else { return }
-        postJSON(url: url, body: ["response": response, "source": "ios-app"])
+        postJSON(url: url, body: ["response": response, "source": "ios-app"], requestId: id)
+    }
+
+    private func removeDeliveredNotification(requestId: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { notifications in
+            let identifiers = notifications.compactMap { notification -> String? in
+                guard notification.request.content.userInfo["request_id"] as? String == requestId else {
+                    return nil
+                }
+                return notification.request.identifier
+            }
+            if !identifiers.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: identifiers)
+            }
+        }
     }
 }
 
 struct RequestsView: View {
     @EnvironmentObject var appDelegate: AppDelegate
     @StateObject private var viewModel = RequestsViewModel()
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var knownPendingIds: Set<String> = []
     @State private var buttonsLocked = false
@@ -216,13 +435,52 @@ struct RequestsView: View {
         }
         .navigationTitle("リクエスト")
         .navigationBarTitleDisplayMode(.inline)
+        .refreshable {
+            await viewModel.refresh()
+        }
         .onAppear {
-            viewModel.serverURL = appDelegate.serverURL
-            viewModel.apiKey = appDelegate.apiKey
-            viewModel.startPolling()
+            viewModel.configure(
+                serverURL: appDelegate.serverURL,
+                apiKey: appDelegate.apiKey,
+                deviceToken: appDelegate.deviceToken
+            )
+            if scenePhase == .active && appDelegate.connectionEnabled {
+                viewModel.startUpdates()
+            }
         }
         .onDisappear {
-            viewModel.stopPolling()
+            viewModel.stopUpdates()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active && appDelegate.connectionEnabled {
+                viewModel.configure(
+                    serverURL: appDelegate.serverURL,
+                    apiKey: appDelegate.apiKey,
+                    deviceToken: appDelegate.deviceToken
+                )
+                viewModel.startUpdates()
+            } else {
+                viewModel.stopUpdates()
+            }
+        }
+        .onChange(of: appDelegate.deviceToken) { newToken in
+            viewModel.configure(
+                serverURL: appDelegate.serverURL,
+                apiKey: appDelegate.apiKey,
+                deviceToken: newToken
+            )
+        }
+        .onChange(of: appDelegate.connectionEnabled) { enabled in
+            if enabled && scenePhase == .active {
+                viewModel.configure(
+                    serverURL: appDelegate.serverURL,
+                    apiKey: appDelegate.apiKey,
+                    deviceToken: appDelegate.deviceToken
+                )
+                viewModel.startUpdates()
+            } else {
+                viewModel.stopUpdates()
+            }
         }
         .onChange(of: pending.map(\.id)) { newPendingIds in
             let newIdSet = Set(newPendingIds)
@@ -271,7 +529,7 @@ struct RequestRow: View {
                             .foregroundColor(remaining <= 30 ? .red : remaining <= 60 ? .yellow : .secondary)
                     }
                 } else {
-                    Text(timeAgo(item.createdDate))
+                    Text(item.createdDate, style: .relative)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -366,12 +624,5 @@ struct RequestRow: View {
                 .disabled(isLocked)
             }
         }
-    }
-
-    private func timeAgo(_ date: Date) -> String {
-        let seconds = Int(-date.timeIntervalSinceNow)
-        if seconds < 60 { return "\(seconds)秒前" }
-        if seconds < 3600 { return "\(seconds / 60)分前" }
-        return "\(seconds / 3600)時間前"
     }
 }

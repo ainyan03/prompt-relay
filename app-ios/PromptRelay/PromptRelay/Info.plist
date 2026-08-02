@@ -8,8 +8,14 @@
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- Current iOS versions ignore the broad fallback below when this
+		     fine-grained local-network exception is present. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>LAN内のPrompt Relayサーバへ接続して承認リクエストを受信します。</string>
 </dict>
 </plist>

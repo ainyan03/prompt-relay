@@ -191,8 +191,8 @@ async function trySendApnsNotification(roomKey: string, payload: ApnsNotificatio
   }
 }
 
-async function trySendApnsSilent(roomKey: string, data: Record<string, unknown>): Promise<void> {
-  const devices = getDeviceTokens(roomKey);
+async function trySendApnsSilent(roomKey: string, data: Record<string, unknown>, excludedToken?: string): Promise<void> {
+  const devices = getDeviceTokens(roomKey).filter(d => d.token !== excludedToken);
   if (devices.length === 0 || !isConfigured()) return;
   const targets = devices.map(d => d.token);
 
@@ -381,7 +381,7 @@ app.get('/permission-request/:id/response', (req, res) => {
 // iOS アプリ / PWA からの応答
 app.post('/permission-request/:id/respond', (req, res) => {
   const roomKey = req.roomKey!;
-  const { response, choice, source } = req.body;
+  const { response, choice, source, device_token } = req.body;
 
   const request = getRequest(roomKey, req.params.id);
   if (!request) {
@@ -428,8 +428,12 @@ app.post('/permission-request/:id/respond', (req, res) => {
   // WebSocket クライアントにブロードキャスト
   broadcast(roomKey);
 
-  // サイレントプッシュで通知をクリア
-  trySendApnsSilent(roomKey, { type: 'dismiss', request_id: req.params.id });
+  // 回答元iPhoneは通知をローカル削除するため、同じ端末を再度起こさない。
+  const excludedToken = typeof device_token === 'string'
+    && getDeviceTokens(roomKey).some(device => device.token === device_token)
+      ? device_token
+      : undefined;
+  trySendApnsSilent(roomKey, { type: 'dismiss', request_id: req.params.id }, excludedToken);
 });
 
 // フックスクリプトからのキャンセル（手動回答・タイムアウト時）

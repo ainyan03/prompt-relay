@@ -1,5 +1,54 @@
 import UIKit
 import UserNotifications
+import Security
+
+private enum KeychainStore {
+    private static let service = Bundle.main.bundleIdentifier ?? "net.ainyan.promptrelay"
+    private static let account = "prompt-relay-api-key"
+
+    static func read() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func save(_ value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
+        var addQuery = query
+        attributes.forEach { addQuery[$0.key] = $0.value }
+        return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func remove() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
 
 class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, ObservableObject {
     @Published var deviceToken: String = ""
@@ -10,7 +59,19 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         return UserDefaults.standard.bool(forKey: "connectionEnabled")
     }()
     @Published var serverURL: String = UserDefaults.standard.string(forKey: "serverURL") ?? AppConfig.defaultServerURL
-    @Published var apiKey: String = UserDefaults.standard.string(forKey: "apiKey") ?? ""
+    @Published var apiKey: String = {
+        if let key = KeychainStore.read() { return key }
+        let legacyKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
+        if !legacyKey.isEmpty, KeychainStore.save(legacyKey) {
+            UserDefaults.standard.removeObject(forKey: "apiKey")
+        }
+        return legacyKey
+    }()
+
+    private let registrationRefreshInterval: TimeInterval = 15 * 60
+    private var lastSuccessfulRegistrationAt: Date?
+    private var registrationInFlight = false
+    private var pendingForcedRegistrationToken: String?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -79,9 +140,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         DispatchQueue.main.async {
             self.deviceToken = token
         }
-        print("[PromptRelay] Device token: \(token)")
+#if DEBUG
+        print("[PromptRelay] Device token: \(token.prefix(12))…")
+#endif
         if connectionEnabled {
-            registerTokenWithServer(token)
+            registerTokenWithServer(token, force: true)
         }
     }
 
@@ -110,7 +173,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         UserDefaults.standard.set(enabled, forKey: "connectionEnabled")
         if enabled {
             guard !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") else { return }
-            registerTokenWithServer(deviceToken)
+            registerTokenWithServer(deviceToken, force: true)
         } else {
             // サーバからデバイストークンを解除（通知が届かなくなる）
             callUnregisterAPI()
@@ -134,19 +197,34 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - ルームキー更新
     func updateApiKey(_ key: String) {
         apiKey = key
-        UserDefaults.standard.set(key, forKey: "apiKey")
+        if key.isEmpty {
+            KeychainStore.remove()
+        } else if !KeychainStore.save(key) {
+            connectionStatus = "ルームキー保存エラー"
+            return
+        }
+        UserDefaults.standard.removeObject(forKey: "apiKey")
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
-            registerTokenWithServer(deviceToken)
+            registerTokenWithServer(deviceToken, force: true)
         }
     }
 
     // MARK: - サーバにトークン登録
-    func registerTokenWithServer(_ token: String) {
+    func registerTokenWithServer(_ token: String, force: Bool = false) {
         guard isApiKeyValid else {
             connectionStatus = "ルームキーエラー"
             return
         }
         guard let url = URL(string: "\(serverURL)/register") else { return }
+        if registrationInFlight {
+            if force { pendingForcedRegistrationToken = token }
+            return
+        }
+        if !force, let lastSuccessfulRegistrationAt,
+           Date().timeIntervalSince(lastSuccessfulRegistrationAt) < registrationRefreshInterval {
+            return
+        }
+        registrationInFlight = true
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -157,9 +235,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         URLSession.shared.dataTask(with: request) { _, response, error in
             DispatchQueue.main.async {
+                self.registrationInFlight = false
                 if let httpResponse = response as? HTTPURLResponse {
                     if httpResponse.statusCode == 200 {
                         self.connectionStatus = "接続済み"
+                        self.lastSuccessfulRegistrationAt = Date()
                     } else if httpResponse.statusCode == 401 {
                         self.connectionStatus = "認証エラー"
                         // 認証エラー → 接続トグルを自動 OFF
@@ -170,6 +250,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                     }
                 } else {
                     self.connectionStatus = "接続失敗: \(error?.localizedDescription ?? "Unknown")"
+                }
+                if let pendingToken = self.pendingForcedRegistrationToken {
+                    self.pendingForcedRegistrationToken = nil
+                    self.registerTokenWithServer(pendingToken, force: true)
                 }
             }
         }.resume()
@@ -227,25 +311,30 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         // バックグラウンド実行時間を確保（Apple Watch 応答時にプロセスが停止されるのを防ぐ）
         var backgroundTaskId = UIBackgroundTaskIdentifier.invalid
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "sendChoiceResponse") {
-            // 期限切れ: リトライが完了しなかった場合
-            print("[PromptRelay] Background task expired for request=\(requestId)")
-            completion?()
-            UIApplication.shared.endBackgroundTask(backgroundTaskId)
-            backgroundTaskId = .invalid
-        }
-
-        sendWithRetry(url: url, choice: choice, attempt: 1, maxAttempts: 3) { success in
-            if !success {
-                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) choice=\(choice)")
-            }
+        var didFinish = false
+        let finish: () -> Void = {
             DispatchQueue.main.async {
+                guard !didFinish else { return }
+                didFinish = true
                 completion?()
                 if backgroundTaskId != .invalid {
                     UIApplication.shared.endBackgroundTask(backgroundTaskId)
                     backgroundTaskId = .invalid
                 }
             }
+        }
+        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "sendChoiceResponse") {
+            print("[PromptRelay] Background task expired for request=\(requestId)")
+            finish()
+        }
+
+        sendWithRetry(url: url, choice: choice, attempt: 1, maxAttempts: 3) { success in
+            if !success {
+                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) choice=\(choice)")
+            } else {
+                self.removeNotification(forRequestId: requestId)
+            }
+            finish()
         }
     }
 
@@ -254,8 +343,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuth(to: &request)
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["choice": choice, "source": "notification"])
-        request.timeoutInterval = 10
+        var body: [String: Any] = ["choice": choice, "source": "notification"]
+        if !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
+            body["device_token"] = deviceToken
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 5
 
         URLSession.shared.dataTask(with: request) { _, httpResponse, error in
             if let error = error {
@@ -282,7 +375,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         serverURL = url
         UserDefaults.standard.set(url, forKey: "serverURL")
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
-            registerTokenWithServer(deviceToken)
+            registerTokenWithServer(deviceToken, force: true)
         }
     }
 
@@ -295,13 +388,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
 
         print("[PromptRelay] Silent push: dismiss request_id=\(requestId)")
-        removeNotification(forRequestId: requestId) {
-            completionHandler(.newData)
+        removeNotification(forRequestId: requestId) { removed in
+            completionHandler(removed ? .newData : .noData)
         }
     }
 
     // MARK: - 通知削除ヘルパー
-    private func removeNotification(forRequestId requestId: String, completion: (() -> Void)? = nil) {
+    private func removeNotification(forRequestId requestId: String, completion: ((Bool) -> Void)? = nil) {
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { notifications in
             let idsToRemove = notifications
@@ -312,47 +405,48 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 center.removeDeliveredNotifications(withIdentifiers: idsToRemove)
                 print("[PromptRelay] Removed \(idsToRemove.count) notification(s) for request_id=\(requestId)")
             }
-            completion?()
+            completion?(!idsToRemove.isEmpty)
         }
     }
 
     // MARK: - フォアグラウンドクリーンアップ（応答済み通知を一括削除）
     func cleanupStaleNotifications() {
-        guard let url = URL(string: "\(serverURL)/permission-requests") else { return }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        applyAuth(to: &request)
-        request.timeoutInterval = 5
-
-        URLSession.shared.dataTask(with: request) { data, _, error in
-            guard let data = data, error == nil else { return }
-
-            struct RequestStatus: Decodable {
-                let id: String
-                let response: String?
+        guard connectionEnabled, isApiKeyValid else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { notifications in
+            let permissionNotifications = notifications.filter {
+                $0.request.content.userInfo["request_id"] is String
             }
+            guard !permissionNotifications.isEmpty,
+                  let url = URL(string: "\(self.serverURL)/permission-requests") else { return }
 
-            guard let statuses = try? JSONDecoder().decode([RequestStatus].self, from: data) else { return }
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            self.applyAuth(to: &request)
+            request.timeoutInterval = 5
 
-            // 応答/キャンセル/期限切れ済みのリクエスト ID を収集
-            let resolvedIds = Set(statuses.compactMap { $0.response != nil ? $0.id : nil })
-            if resolvedIds.isEmpty { return }
+            URLSession.shared.dataTask(with: request) { data, _, error in
+                guard let data, error == nil else { return }
 
-            let center = UNUserNotificationCenter.current()
-            center.getDeliveredNotifications { notifications in
-                let idsToRemove = notifications
-                    .filter { notification in
-                        guard let reqId = notification.request.content.userInfo["request_id"] as? String else { return false }
-                        return resolvedIds.contains(reqId)
-                    }
-                    .map { $0.request.identifier }
+                struct RequestStatus: Decodable {
+                    let id: String
+                    let response: String?
+                }
 
+                guard let statuses = try? JSONDecoder().decode([RequestStatus].self, from: data) else { return }
+                let resolvedIds = Set(statuses.compactMap { $0.response != nil ? $0.id : nil })
+                if resolvedIds.isEmpty { return }
+
+                let idsToRemove = permissionNotifications.compactMap { notification -> String? in
+                    guard let reqId = notification.request.content.userInfo["request_id"] as? String,
+                          resolvedIds.contains(reqId) else { return nil }
+                    return notification.request.identifier
+                }
                 if !idsToRemove.isEmpty {
                     center.removeDeliveredNotifications(withIdentifiers: idsToRemove)
                     print("[PromptRelay] Cleanup: removed \(idsToRemove.count) stale notification(s)")
                 }
-            }
-        }.resume()
+            }.resume()
+        }
     }
 }
