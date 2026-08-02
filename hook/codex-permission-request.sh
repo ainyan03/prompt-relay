@@ -44,7 +44,7 @@ else
 fi
 
 PAYLOAD=$(/usr/bin/env python3 "$PARSER" codex-parse \
-  "$INPUT" "$HOSTNAME_SHORT" "$TIMEOUT" "$PAYLOAD_TARGET" 2>/dev/null)
+  "$INPUT" "$DISPLAY_HOST" "$TIMEOUT" "$PAYLOAD_TARGET" 2>/dev/null)
 [ -z "$PAYLOAD" ] && exit 0
 
 REQUEST_ID=""
@@ -131,7 +131,7 @@ if [ "$HYBRID" = "true" ]; then
     # 実際に表示されたTUIから選択肢を抽出する。これにより、固定のAllow/Deny
     # ではなく、Codexが表示した3択などをそのままスマホへ転送できる。
     PAYLOAD=$(/usr/bin/env python3 "$PARSER" codex-parse \
-      "$INPUT" "$HOSTNAME_SHORT" "$TIMEOUT" "$PAYLOAD_TARGET" "$PANE_CONTENT" 2>/dev/null)
+      "$INPUT" "$DISPLAY_HOST" "$TIMEOUT" "$PAYLOAD_TARGET" "$PANE_CONTENT" 2>/dev/null)
     [ -z "$PAYLOAD" ] && exit 0
 
     register_requests

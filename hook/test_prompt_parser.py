@@ -442,9 +442,10 @@ class TestCodexPermissionRequest:
     def test_tmux_hybrid_target(self):
         result = parse_codex_request(
             '{"session_id":"s","turn_id":"t","tool_name":"Bash"}',
-            'devbox', 120, 'devbox:main:0.0', TestParseCodexChoices.PANE)
+            'devbox:main', 120, 'devbox:main:0.0', TestParseCodexChoices.PANE)
         assert result['has_tmux'] is True
         assert result['tmux_target'] == 'devbox:main:0.0'
+        assert result['hostname'] == 'devbox:main'
         assert len(result['choices']) == 3
 
     def test_command_is_description_fallback(self):

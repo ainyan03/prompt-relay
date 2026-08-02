@@ -354,7 +354,9 @@ def parse_codex_request(stdin_data: str, hostname: str | None = None,
         'has_tmux': bool(tmux_target),
         'can_respond': True,
         'tmux_target': tmux_target or f'{host}:codex:{session_id}:{turn_id}:{digest}',
-        'hostname': f'{host}:Codex',
+        # tmuxハイブリッドではClaude Codeと同じ「端末名:セッション名」。
+        # 直接応答モードだけ、識別用に従来の「端末名:Codex」を使う。
+        'hostname': host if tmux_target else f'{host}:Codex',
         'client': 'codex',
     }
     if timeout is not None and timeout > 0:
