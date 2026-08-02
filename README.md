@@ -24,7 +24,7 @@ Claude Code / Codex の承認待ちをスマホで操作するためのツール
 ## 必要なもの
 
 - Claude Code を使う場合: tmux 上で実行する環境
-- Codex を使う場合: lifecycle hooks 対応版（tmux は不要）
+- Codex を使う場合: lifecycle hooks 対応版。TUIとスマホを併用する場合はtmux
 - Python 3（フックスクリプトのプロンプト検出・パースに使用）
 - Node.js サーバ（ローカルまたは LAN 内、Docker 対応）
 - Android アプリを使う場合: Android 8.0 以上
@@ -50,7 +50,7 @@ hook/notification.sh        ── 処理完了などの通知を送信
 Server へ応答を返送（先に応答した方を採用）
     │
     ▼
-Claude: tmux send-keys で入力 / Codex: hook の allow・deny JSON を返却
+Claude: tmux send-keys / Codex: tmux内はTUIへ入力、tmux外はhookのdecisionを返却
 ```
 
 ## クイックセットアップ
@@ -97,7 +97,7 @@ prompt-relay は Claude Code / Codex の標準承認操作を**補完する**ツ
 
 ### フェイルセーフ設計
 
-Claude Code では `PreToolUse` フックと tmux の画面検出を使用します。Codex では `PermissionRequest` フックがサーバ応答を待ち、応答時だけ構造化された `allow` / `deny` を返します。接続失敗やタイムアウト時は空出力で終了し、Codex 標準の承認画面へフォールバックします。
+Claude Code では `PreToolUse` フックとtmuxの画面検出を使用します。Codexはtmux内で起動すると、`PermissionRequest` hookが要求だけを登録して即終了するため、標準TUIとスマホの両方から回答できます。Codex TUIに3択以上が表示された場合も、各選択肢の文言をスマホへ転送し、選択結果を対応するTUIショートカットへ変換します。tmux外では構造化された `allow` / `deny` をhookから直接返します。
 
 - フックがエラーで終了しても、標準の承認操作を利用できる
 - サーバが停止・障害状態でも、Claude Code / Codex の処理を継続できる
@@ -148,18 +148,20 @@ prompt-relay/
 1. **サーバを起動する**
    - Docker: `docker compose up -d`
    - ローカル: `cd server && npm ci && npm run dev`
-2. Claude Code は **tmux セッション内で**、Codex は通常どおり起動
+2. TUIとスマホを併用する場合は、Claude Code / Codexを **tmuxセッション内で** 起動
 3. iOS アプリまたは PWA (`http://localhost:3939/`) を開き、接続設定を行う
 4. Claude Code / Codex がツール実行の許可を求めると、フックスクリプトが発火
 5. サーバ経由で iOS / PWA にプッシュ通知が届く
 6. 通知から直接応答、または アプリを開いて応答
-7. フックスクリプトが応答を受け取り、Claude は tmux、Codex は hook 応答で反映
+7. フックスクリプトが応答を受け取り、tmux TUIまたはCodex hook応答へ反映
 8. tmux 側で手動回答した場合は、アプリ側が自動的に「Cancelled」に更新
 9. 処理が完了すると完了通知が届く
 
 ## 注意事項
 
-- **Claude Code では tmux が必須**: `tmux send-keys` で応答を送信します。Codex は構造化 hook 応答を使うため tmux 不要です
+- **Codexはモードを自動選択**: tmux内ではTUI＋スマホのハイブリッド、tmux外ではスマホ優先の直接応答になります
+- **Automatic approvalを通知しない**: tmuxハイブリッドでは、標準TUIが実際に表示された承認要求だけをスマホへ転送します
+- **APNs collapse ID**: 64バイトを超える識別子はサーバで固定長ハッシュへ変換します
 - **インメモリストレージ**: サーバ再起動で履歴クリア。未応答リクエストは `REQUEST_TIMEOUT` 秒（デフォルト 120）でタイムアウト、`REQUEST_CLEANUP` 秒（デフォルト 300）で自動削除。`MAX_HISTORY` で履歴保持件数を制限可能
 - **マルチデバイス**: APNs / Web Push それぞれ最大 4 台（`MAX_DEVICES` で変更可）。上限超過時は最後に通知送信が成功した時刻が最も古いデバイスを自動淘汰
 - **通知の即時配信**: 同一ターミナルからの通知は APNs collapse-id / Web Push tag で管理。毎回ユニークな collapse-id を使用し、APNs の「更新」扱いによる配信遅延を回避

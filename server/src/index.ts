@@ -11,6 +11,7 @@ import { sendNotification, sendSilentNotification, isConfigured, isApnsBadDevice
 import { initWebPush, sendWebPushNotification, isConfigured as isWebPushConfigured, getVapidPublicKey } from './web-push.js';
 import { ensureCerts, getLanIPs, isSanCovered, regenerateCert, dynamicSanCount } from './certs.js';
 import { setupWebSocket, broadcast } from './ws.js';
+import { makeCollapseId } from './collapse-id.js';
 
 config();
 initWebPush();
@@ -320,7 +321,7 @@ app.post('/permission-request', async (req, res) => {
   }
 
   // collapse-id: 2スロット交互（最大2件、直前の通知は置換しない）
-  const collapseId = tmux_target ? `relay:${tmux_target}:${collapseSlot}` : undefined;
+  const collapseId = makeCollapseId(tmux_target, collapseSlot);
   if (collapseId) {
     console.log(`[permission]   collapse-id: ${collapseId}`);
   }
@@ -474,7 +475,7 @@ app.post('/notify', async (req, res) => {
   const notifBody = message || '処理が完了しました';
 
   // collapse-id: 同一ターミナルの通知を自動上書き（承認リクエストと共有）
-  const collapseId = tmux_target ? `relay:${tmux_target}` : undefined;
+  const collapseId = makeCollapseId(tmux_target);
 
   // レスポンスを先に返す
   res.json({ ok: true });

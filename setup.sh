@@ -25,7 +25,7 @@ fi
 
 if ! command -v tmux &>/dev/null; then
   echo "警告: tmux がインストールされていません"
-  echo "  Claude Code の自動応答には tmux が必要です（Codex は tmux 不要）"
+  echo "  Claude Code、およびCodexのTUI＋スマホ併用には tmux が必要です"
   echo ""
 fi
 

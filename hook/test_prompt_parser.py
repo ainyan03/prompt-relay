@@ -4,8 +4,11 @@ import json
 import pytest
 from prompt_parser import (
     codex_decision,
+    codex_choice_key,
+    detect_codex_prompt,
     detect_prompt,
     parse_codex_request,
+    parse_codex_choices,
     parse_pane,
     parse_response,
 )
@@ -159,6 +162,64 @@ class TestDetectPrompt:
         assert detect_prompt(pane) is True
 
 
+class TestDetectCodexPrompt:
+    def test_exec_approval(self):
+        pane = """Command needs your approval.
+Would you like to run the following command?
+› 1. Yes, proceed
+  2. No, cancel
+Press enter to confirm or esc to cancel"""
+        assert detect_codex_prompt(pane) is True
+
+    def test_network_approval(self):
+        pane = """Do you want to approve network access to example.com?
+Allow / Deny"""
+        assert detect_codex_prompt(pane) is True
+
+    def test_normal_output(self):
+        assert detect_codex_prompt('Finished successfully. No errors.') is False
+
+
+class TestParseCodexChoices:
+    PANE = """• Running sw_vers -buildVersion
+
+  Would you like to run the following command?
+
+  Environment: local
+  Reason: Codex needs approval
+  $ sw_vers -buildVersion
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `sw_vers -buildVersion` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel"""
+
+    def test_extracts_all_three_choices(self):
+        assert parse_codex_choices(self.PANE) == [
+            {'number': 1, 'text': 'Yes, proceed (y)'},
+            {'number': 2, 'text': "Yes, and don't ask again for commands that start with `sw_vers -buildVersion` (p)"},
+            {'number': 3, 'text': 'No, and tell Codex what to do differently (esc)'},
+        ]
+
+    def test_extracts_shortcut_keys(self):
+        assert codex_choice_key(self.PANE, 1) == 'y'
+        assert codex_choice_key(self.PANE, 2) == 'p'
+        assert codex_choice_key(self.PANE, 3) == 'esc'
+
+    def test_wrapped_choice(self):
+        pane = """Would you like to run the following command?
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start
+     with `a very long command` (p)
+  3. No, and tell Codex what to do differently (esc)
+Press enter to confirm or esc to cancel"""
+        choices = parse_codex_choices(pane)
+        assert choices[1]['text'] == (
+            "Yes, and don't ask again for commands that start "
+            "with `a very long command` (p)")
+
+
 # ============================================================
 # parse_pane テスト
 # ============================================================
@@ -299,6 +360,11 @@ class TestParseResponse:
         resp = parse_response('{"response": "allow", "send_key": "1"}')
         assert resp == 'ok|1|allow'
 
+    def test_second_allow_choice_keeps_send_key(self):
+        """Codexの「以後確認しない」を通常allowへ潰さず、2番として保持する。"""
+        resp = parse_response('{"response": "allow", "send_key": "2"}')
+        assert resp == 'ok|2|allow'
+
     def test_allow_default_send_key(self):
         """allow で send_key 未指定の場合はデフォルト '1'"""
         resp = parse_response('{"response": "allow"}')
@@ -372,6 +438,14 @@ class TestCodexPermissionRequest:
         assert result['hostname'] == 'devbox:Codex'
         assert result['tmux_target'].startswith('devbox:codex:session-123:turn-456:')
         assert result['timeout'] == 120
+
+    def test_tmux_hybrid_target(self):
+        result = parse_codex_request(
+            '{"session_id":"s","turn_id":"t","tool_name":"Bash"}',
+            'devbox', 120, 'devbox:main:0.0', TestParseCodexChoices.PANE)
+        assert result['has_tmux'] is True
+        assert result['tmux_target'] == 'devbox:main:0.0'
+        assert len(result['choices']) == 3
 
     def test_command_is_description_fallback(self):
         result = parse_codex_request('{"tool_name":"Bash","tool_input":{"command":"ls"}}')

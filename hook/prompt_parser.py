@@ -8,8 +8,10 @@ CLI インターフェース:
   python3 prompt_parser.py detect <pane_content>
   python3 prompt_parser.py parse <stdin_json> <pane_content> [tmux_target] [hostname] [timeout]
   python3 prompt_parser.py response <response_json>
-  python3 prompt_parser.py codex-parse <stdin_json> [hostname] [timeout]
+  python3 prompt_parser.py codex-parse <stdin_json> [hostname] [timeout] [tmux_target] [pane_content]
   python3 prompt_parser.py codex-decision <allow|deny>
+  python3 prompt_parser.py detect-codex <pane_content>
+  python3 prompt_parser.py codex-choice-key <pane_content> <choice_number>
 """
 
 import hashlib
@@ -67,6 +69,79 @@ def detect_prompt(pane_text: str) -> bool:
             return True
 
     return False
+
+
+def detect_codex_prompt(pane_text: str) -> bool:
+    """Codex TUI の承認ダイアログが可視領域にあるか判定する。"""
+    if not pane_text:
+        return False
+    lower = pane_text.lower()
+    prompt_markers = (
+        'needs your approval',
+        'would you like to run',
+        'do you want to approve',
+        'allow codex to run',
+    )
+    has_prompt = any(marker in lower for marker in prompt_markers)
+    has_action = ('yes' in lower or 'allow' in lower) and (
+        'no' in lower or 'deny' in lower or 'esc' in lower
+    )
+    return has_prompt and has_action
+
+
+def parse_codex_choices(pane_text: str) -> list[dict]:
+    """Codex TUI の承認領域から番号付き選択肢を抽出する。"""
+    if not pane_text:
+        return []
+    lines = pane_text.splitlines()
+    prompt_start = 0
+    for i in range(len(lines) - 1, -1, -1):
+        lower = lines[i].lower()
+        if ('would you like to run' in lower or
+                'do you want to approve' in lower or
+                'allow codex to run' in lower):
+            prompt_start = i
+            break
+
+    choices: list[dict] = []
+    current: dict | None = None
+    for line in lines[prompt_start:]:
+        match = re.match(r'\s*[›❯>]?\s*(\d+)\.\s+(.+?)\s*$', line)
+        if match:
+            current = {'number': int(match.group(1)), 'text': match.group(2).strip()}
+            choices.append(current)
+            continue
+        stripped = line.strip()
+        if current and stripped:
+            lower = stripped.lower()
+            if lower.startswith('press enter') or lower.startswith('esc to'):
+                current = None
+            elif not re.match(r'^(environment|reason):', lower) and not stripped.startswith('$'):
+                # 狭い端末で折り返された選択肢の続きを結合する。
+                current['text'] += ' ' + stripped
+
+    # 通常出力中の番号付きリストを拾わないよう、承認/拒否らしい選択肢を要求する。
+    joined = ' '.join(choice['text'].lower() for choice in choices)
+    if len(choices) < 2 or not ('yes' in joined or 'allow' in joined):
+        return []
+    if not ('no' in joined or 'deny' in joined or '(esc)' in joined):
+        return []
+    return choices
+
+
+def codex_choice_key(pane_text: str, choice_number: int) -> str:
+    """選択肢末尾のTUIショートカットを返す。見つからなければ安全な既定値。"""
+    choices = parse_codex_choices(pane_text)
+    selected = next((c for c in choices if c['number'] == choice_number), None)
+    if selected:
+        match = re.search(r'\((y|p|esc)\)\s*$', selected['text'], re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    if choices and choice_number == choices[-1]['number']:
+        return 'esc'
+    if choices and choice_number == choices[0]['number']:
+        return 'enter'
+    return ''
 
 
 def parse_pane(stdin_data: str, pane_data: str,
@@ -231,7 +306,9 @@ def parse_response(response_json: str) -> str:
 
 
 def parse_codex_request(stdin_data: str, hostname: str | None = None,
-                        timeout: int | None = None) -> dict:
+                        timeout: int | None = None,
+                        tmux_target: str | None = None,
+                        pane_data: str | None = None) -> dict:
     """Codex PermissionRequest の入力をサーバ共通形式へ変換する。"""
     try:
         d = json.loads(stdin_data) if stdin_data else {}
@@ -261,6 +338,11 @@ def parse_codex_request(stdin_data: str, hostname: str | None = None,
     turn_id = str(d.get('turn_id') or 'unknown')[:24]
     host = hostname or 'unknown'
 
+    choices = parse_codex_choices(pane_data or '') or [
+        {'number': 1, 'text': 'Allow'},
+        {'number': 2, 'text': 'Deny'},
+    ]
+
     result = {
         'tool_name': tool_name,
         'tool_input': tool_input,
@@ -268,14 +350,10 @@ def parse_codex_request(stdin_data: str, hostname: str | None = None,
         'header': f'Codex: {tool_name}',
         'description': description,
         'prompt_question': 'Codex の実行を許可しますか？',
-        'choices': [
-            {'number': 1, 'text': 'Allow'},
-            {'number': 2, 'text': 'Deny'},
-        ],
-        # tmux は使わないが、Codex のフックを通して応答可能。
-        'has_tmux': False,
+        'choices': choices,
+        'has_tmux': bool(tmux_target),
         'can_respond': True,
-        'tmux_target': f'{host}:codex:{session_id}:{turn_id}:{digest}',
+        'tmux_target': tmux_target or f'{host}:codex:{session_id}:{turn_id}:{digest}',
         'hostname': f'{host}:Codex',
         'client': 'codex',
     }
@@ -310,6 +388,10 @@ def main():
         pane = sys.argv[2] if len(sys.argv) > 2 else ''
         print('yes' if detect_prompt(pane) else 'no')
 
+    elif cmd == 'detect-codex':
+        pane = sys.argv[2] if len(sys.argv) > 2 else ''
+        print('yes' if detect_codex_prompt(pane) else 'no')
+
     elif cmd == 'parse':
         stdin_data = sys.argv[2] if len(sys.argv) > 2 else '{}'
         pane_data = sys.argv[3] if len(sys.argv) > 3 else ''
@@ -331,12 +413,23 @@ def main():
         stdin_data = sys.argv[2] if len(sys.argv) > 2 else '{}'
         hostname = sys.argv[3] if len(sys.argv) > 3 else None
         timeout_str = sys.argv[4] if len(sys.argv) > 4 else None
+        tmux_target = sys.argv[5] if len(sys.argv) > 5 else None
+        pane_data = sys.argv[6] if len(sys.argv) > 6 else None
         try:
             timeout_val = int(timeout_str) if timeout_str else None
         except ValueError:
             timeout_val = None
-        print(json.dumps(parse_codex_request(stdin_data, hostname, timeout_val),
+        print(json.dumps(parse_codex_request(
+            stdin_data, hostname, timeout_val, tmux_target, pane_data),
                          ensure_ascii=False))
+
+    elif cmd == 'codex-choice-key':
+        pane = sys.argv[2] if len(sys.argv) > 2 else ''
+        try:
+            choice_number = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+        except ValueError:
+            choice_number = 0
+        print(codex_choice_key(pane, choice_number))
 
     elif cmd == 'codex-decision':
         response = sys.argv[2] if len(sys.argv) > 2 else ''

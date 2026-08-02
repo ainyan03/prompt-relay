@@ -16,7 +16,17 @@ ls -la /path/to/prompt-relay/hook/codex-permission-request.sh
 hooks = true
 ```
 
-Codex はリモート回答を待っている間、標準の承認画面をまだ表示しません。サーバへ接続できない場合は即座に、応答がない場合は `PROMPT_RELAY_TIMEOUT`（既定 120 秒）の経過後に標準画面へフォールバックします。
+Codexをtmux内で起動すると、標準TUIとスマホの両方に承認要求が表示されます。tmux外ではリモート回答を待っている間、標準の承認画面はまだ表示されません。サーバへ接続できない場合は即座に、応答がない場合は `PROMPT_RELAY_TIMEOUT`（既定120秒）の経過後に標準画面へフォールバックします。
+
+Automatic approvalされた要求は、tmuxハイブリッドではTUIが表示されないためスマホにも通知されません。tmux外の直接応答モードはTUIを観測できず、この判定には対応しません。
+
+### アプリ画面には出るがiOS通知バナーが出ない
+
+Codexのセッション識別子を含む古いサーバでは、`apns-collapse-id` がAPNsの64バイト上限を超え、承認通知だけが拒否される場合があります。最新サーバは長いIDを固定長ハッシュへ変換します。サーバを再ビルドして再起動してください。
+
+```bash
+docker compose up -d --build
+```
 
 ## 通知が来ない
 
