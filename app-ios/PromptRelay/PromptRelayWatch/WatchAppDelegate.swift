@@ -33,10 +33,47 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         }
     }
 
-    /// 前面に来たとき、届いている通知から最新の承認リクエストを応答画面に載せる。
-    /// 通知を見逃してウィジェット等からアプリを開いた場合の入口。
+    /// 前面に来たとき、承認待ちを取得して応答画面に載せる。
+    /// 通知を見逃したり消したりしてからウィジェット等でアプリを開いた場合の入口。
     func applicationDidBecomeActive() {
-        refreshPendingFromDeliveredNotifications()
+        refreshPending()
+    }
+
+    /// iPhone 経由でサーバの承認待ち一覧を取り、最新の 1 件を表示する。
+    /// iPhone に届かないときは、届いている通知から拾う (通知を消していると何も出ない)。
+    func refreshPending() {
+        let session = WCSession.default
+        guard WCSession.isSupported(), session.activationState == .activated else {
+            refreshPendingFromDeliveredNotifications()
+            return
+        }
+        WatchStatus.shared.set(\.lastEvent, "承認待ちを iPhone に問い合わせ")
+        session.sendMessage(["request": "pending"], replyHandler: { reply in
+            guard reply["ok"] as? Bool == true, let list = reply["requests"] as? [[String: Any]] else {
+                WatchStatus.shared.set(\.lastEvent, "問い合わせ失敗 (iPhone がサーバへ届かず)")
+                self.refreshPendingFromDeliveredNotifications()
+                return
+            }
+            let newest = list
+                .sorted { ($0["created_at"] as? Double ?? 0) > ($1["created_at"] as? Double ?? 0) }
+                .compactMap { WatchPendingRequest(listItem: $0) }
+                .first
+            DispatchQueue.main.async {
+                if let newest {
+                    if WatchStatus.shared.pendingRequest?.id != newest.id {
+                        WatchStatus.shared.setPending(newest)
+                    }
+                    WatchStatus.shared.set(\.lastEvent, "承認待ち \(list.count) 件")
+                } else {
+                    // サーバに承認待ちが無い (iPhone 側で応答済み等) → 表示を消す
+                    WatchStatus.shared.setPending(nil)
+                    WatchStatus.shared.set(\.lastEvent, "承認待ちなし")
+                }
+            }
+        }, errorHandler: { error in
+            WatchStatus.shared.set(\.lastEvent, "問い合わせ不達 (\(error.localizedDescription))")
+            self.refreshPendingFromDeliveredNotifications()
+        })
     }
 
     func refreshPendingFromDeliveredNotifications() {
@@ -119,6 +156,17 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         completionHandler([.banner, .sound])
     }
 
+    /// この request_id の通知を Watch から消す (通知タップ経由・一覧経由のどちらでも)
+    private static func removeDeliveredNotifications(requestId: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { notifications in
+            let ids = notifications
+                .filter { $0.request.content.userInfo["request_id"] as? String == requestId }
+                .map { $0.request.identifier }
+            if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+        }
+    }
+
     private static func pendingRequest(from notification: UNNotification) -> WatchPendingRequest? {
         let content = notification.request.content
         return WatchPendingRequest(
@@ -145,7 +193,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 WatchStatus.shared.sending = false
                 if ok {
                     WatchStatus.shared.pendingRequest = nil
-                    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [request.notificationIdentifier])
+                    Self.removeDeliveredNotifications(requestId: request.id)
                 }
             }
         }, errorHandler: { error in

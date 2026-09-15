@@ -31,6 +31,12 @@ struct WatchPendingRequest: Identifiable, Equatable {
         self.notificationIdentifier = notificationIdentifier
     }
 
+    /// iPhone 経由で取得した一覧の要素 (request_id / title / body / choices) から組み立てる。
+    init?(listItem: [String: Any]) {
+        guard let title = listItem["title"] as? String, let body = listItem["body"] as? String else { return nil }
+        self.init(userInfo: listItem, title: title, body: body, notificationIdentifier: "")
+    }
+
     /// 最後の選択肢 (No 相当) は破壊的表示にする (サーバの deny 判定と同じ規則)
     func isDestructive(_ choice: Choice) -> Bool {
         choice.number == choices.last?.number

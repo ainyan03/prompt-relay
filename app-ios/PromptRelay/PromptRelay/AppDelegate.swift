@@ -141,6 +141,40 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         registerWatchTokenWithServer()
     }
 
+    /// Watch 向けに、サーバの承認待ち一覧を取得して返す (未応答のみ、新しい順)。
+    /// 返す形は Watch 側の WatchPendingRequest が通知の userInfo から作るものと揃える。
+    func fetchPendingRequestsForWatch(completion: @escaping ([[String: Any]]?) -> Void) {
+        guard connectionEnabled, isApiKeyValid, let url = URL(string: "\(serverURL)/permission-requests") else {
+            completion(nil)
+            return
+        }
+        var request = URLRequest(url: url)
+        applyAuth(to: &request)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            guard let data, (response as? HTTPURLResponse)?.statusCode == 200,
+                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                completion(nil)
+                return
+            }
+            let pending = list
+                .filter { $0["response"] == nil || $0["response"] is NSNull }
+                .compactMap { r -> [String: Any]? in
+                    guard let id = r["id"] as? String else { return nil }
+                    let hostname = r["hostname"] as? String
+                    return [
+                        "request_id": id,
+                        "title": hostname.map { "承認待ち [\($0)]" } ?? "承認待ち",
+                        "body": r["message"] as? String ?? "",
+                        "choices": r["choices"] as? [[String: Any]] ?? [],
+                        "created_at": r["created_at"] as? Double ?? 0,
+                    ]
+                }
+            print("[PromptRelay] pending requests for Watch: \(pending.count)")
+            completion(pending)
+        }.resume()
+    }
+
     /// Watch からの承認応答を転送する
     func respondFromWatch(requestId: String, choice: Int, completion: ((Bool) -> Void)?) {
         print("[PromptRelay] respond relayed from Watch: request=\(requestId) choice=\(choice)")

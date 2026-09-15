@@ -70,6 +70,17 @@ final class WatchBridge: NSObject, WCSessionDelegate {
             }
             return
         }
+        // Watch アプリが前面に来たときの承認待ち一覧要求。通知を消した後でも応答できるようにする。
+        if message["request"] as? String == "pending" {
+            guard let appDelegate else {
+                replyHandler(["ok": false, "error": "not ready"])
+                return
+            }
+            appDelegate.fetchPendingRequestsForWatch { requests in
+                replyHandler(["ok": requests != nil, "requests": requests ?? []])
+            }
+            return
+        }
         replyHandler(["ok": false, "error": "unknown message"])
     }
 

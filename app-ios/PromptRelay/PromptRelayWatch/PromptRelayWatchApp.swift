@@ -55,6 +55,10 @@ struct WatchContentView: View {
                         row("iPhone", status.phoneState)
                         row("登録", status.registerState)
                         row("直近", status.lastEvent)
+                        Button("承認待ちを更新") {
+                            appDelegate.refreshPending()
+                        }
+                        .font(.caption)
                         Button("iPhone へ再送") {
                             appDelegate.sendTokenToPhone()
                         }
