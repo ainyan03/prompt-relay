@@ -10,21 +10,54 @@ final class WatchStatus: ObservableObject {
     @Published var registerState = "未実行"
     @Published var lastEvent = "-"
     @Published var counter = 0
+    /// 時刻付きの直近イベント (新しい順)。人が秒を測らずに済むように Watch 側で記録する。
+    @Published var eventLog: [String] = []
+    private static let maxLog = 12
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.S"
+        return f
+    }()
+
+    static func stamp(_ date: Date = Date()) -> String {
+        timeFormatter.string(from: date)
+    }
+
+    /// 履歴にだけ残す (lastEvent は変えない)
+    func log(_ text: String, at date: Date = Date()) {
+        DispatchQueue.main.async {
+            self.eventLog.insert("\(Self.stamp(date)) \(text)", at: 0)
+            if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+        }
+    }
     /// 前面で応答待ちのリクエスト (通知タップで開いたもの)
     @Published var pendingRequest: WatchPendingRequest? = nil
     @Published var sending = false
 
     func setPending(_ request: WatchPendingRequest?) {
+        let now = Date()
         DispatchQueue.main.async {
+            let changed = self.pendingRequest?.id != request?.id
             self.pendingRequest = request
             self.counter += 1
+            if changed {
+                let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
+                self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
+                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            }
         }
     }
 
     func set(_ keyPath: ReferenceWritableKeyPath<WatchStatus, String>, _ value: String) {
+        let now = Date()
         DispatchQueue.main.async {
             self[keyPath: keyPath] = value
             self.counter += 1
+            if keyPath == \.lastEvent {
+                self.eventLog.insert("\(Self.stamp(now)) \(value)", at: 0)
+                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            }
         }
     }
 }

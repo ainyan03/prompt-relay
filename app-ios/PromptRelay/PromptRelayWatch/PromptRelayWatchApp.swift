@@ -55,6 +55,10 @@ struct WatchContentView: View {
                         row("iPhone", status.phoneState)
                         row("登録", status.registerState)
                         row("直近", status.lastEvent)
+                        Text("履歴（新しい順）").font(.caption2).foregroundStyle(.secondary)
+                        ForEach(Array(status.eventLog.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(.system(size: 10, design: .monospaced))
+                        }
                         Button("承認待ちを更新") {
                             appDelegate.refreshPending()
                         }

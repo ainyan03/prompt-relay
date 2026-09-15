@@ -175,8 +175,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }.resume()
     }
 
+    /// 承認応答の結果。gone はサーバ側で既に応答済み・期限切れ (別端末で回答した等)。
+    enum ChoiceResponseOutcome {
+        case sent
+        case gone
+        case failed
+    }
+
     /// Watch からの承認応答を転送する
-    func respondFromWatch(requestId: String, choice: Int, completion: ((Bool) -> Void)?) {
+    func respondFromWatch(requestId: String, choice: Int, completion: ((ChoiceResponseOutcome) -> Void)?) {
         print("[PromptRelay] respond relayed from Watch: request=\(requestId) choice=\(choice)")
         // WCSession の delegate はバックグラウンドキューで呼ばれる。UIKit の背景実行枠は main で扱う。
         DispatchQueue.main.async {
@@ -450,7 +457,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 
     // MARK: - サーバに応答送信（選択肢番号ベース、リトライ付き）
-    private func sendChoiceResponse(requestId: String, choice: Int, source: String = "notification", completion: ((Bool) -> Void)? = nil) {
+    private func sendChoiceResponse(requestId: String, choice: Int, source: String = "notification", completion: ((ChoiceResponseOutcome) -> Void)? = nil) {
         // Cold launch 時に serverURL が空の場合、UserDefaults から再読み込み
         var effectiveURL = serverURL
         if effectiveURL.isEmpty {
@@ -460,7 +467,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         guard let url = URL(string: "\(effectiveURL)/permission-request/\(requestId)/respond") else {
             print("[PromptRelay] Invalid URL for respond: serverURL=\(effectiveURL) requestId=\(requestId)")
-            completion?(false)
+            completion?(.failed)
             return
         }
 
@@ -469,12 +476,12 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // バックグラウンド実行時間を確保（Apple Watch 応答時にプロセスが停止されるのを防ぐ）
         var backgroundTaskId = UIBackgroundTaskIdentifier.invalid
         var didFinish = false
-        var sendSucceeded = false
+        var outcome: ChoiceResponseOutcome = .failed
         let finish: () -> Void = {
             DispatchQueue.main.async {
                 guard !didFinish else { return }
                 didFinish = true
-                completion?(sendSucceeded)
+                completion?(outcome)
                 if backgroundTaskId != .invalid {
                     UIApplication.shared.endBackgroundTask(backgroundTaskId)
                     backgroundTaskId = .invalid
@@ -486,10 +493,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             finish()
         }
 
-        sendWithRetry(url: url, choice: choice, source: source, attempt: 1, maxAttempts: 3) { success in
-            sendSucceeded = success
-            guard success else {
-                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) choice=\(choice)")
+        sendWithRetry(url: url, choice: choice, source: source, attempt: 1, maxAttempts: 3) { statusCode in
+            switch statusCode {
+            case 200: outcome = .sent
+            // 404 = not found / already responded: 別端末で回答済みか期限切れ。通知は消してよい
+            case 404: outcome = .gone
+            default: outcome = .failed
+            }
+            guard outcome != .failed else {
+                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) choice=\(choice) status=\(statusCode.map(String.init) ?? "none")")
                 finish()
                 return
             }
@@ -499,7 +511,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    private func sendWithRetry(url: URL, choice: Int, source: String, attempt: Int, maxAttempts: Int, completion: @escaping (Bool) -> Void) {
+    /// 完了時に HTTP ステータス (通信失敗は nil) を返す
+    private func sendWithRetry(url: URL, choice: Int, source: String, attempt: Int, maxAttempts: Int, completion: @escaping (Int?) -> Void) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -520,13 +533,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                         self.sendWithRetry(url: url, choice: choice, source: source, attempt: attempt + 1, maxAttempts: maxAttempts, completion: completion)
                     }
                 } else {
-                    completion(false)
+                    completion(nil)
                 }
             } else if let http = httpResponse as? HTTPURLResponse {
                 print("[PromptRelay] Choice sent: \(choice) (HTTP \(http.statusCode), attempt \(attempt))")
-                completion(http.statusCode == 200)
+                completion(http.statusCode)
             } else {
-                completion(false)
+                completion(nil)
             }
         }.resume()
     }

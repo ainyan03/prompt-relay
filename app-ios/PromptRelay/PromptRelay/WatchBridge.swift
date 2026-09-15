@@ -65,8 +65,9 @@ final class WatchBridge: NSObject, WCSessionDelegate {
             return
         }
         if let requestId = message["respondRequestId"] as? String, let choice = message["choice"] as? Int {
-            appDelegate?.respondFromWatch(requestId: requestId, choice: choice) { success in
-                replyHandler(["ok": success])
+            appDelegate?.respondFromWatch(requestId: requestId, choice: choice) { outcome in
+                // gone: 既に応答済み・期限切れ。Watch 側は成功と同様に枠を消してよい
+                replyHandler(["ok": outcome == .sent, "gone": outcome == .gone])
             }
             return
         }
