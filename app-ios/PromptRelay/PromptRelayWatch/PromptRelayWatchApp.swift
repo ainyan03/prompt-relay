@@ -63,6 +63,7 @@ struct WatchContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .scenePadding(.horizontal)
         }
     }
 
@@ -84,6 +85,7 @@ struct WatchContentView: View {
                         .lineLimit(2)
                         .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
                 .tint(request.isDestructive(choice) ? .red : .green)
                 .disabled(status.sending)
             }
@@ -92,6 +94,7 @@ struct WatchContentView: View {
                     .frame(maxWidth: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 実行中バイナリの更新時刻。Watch 側で旧版が動いていないかを画面で判別するため。
