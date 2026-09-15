@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct ContentView: View {
@@ -28,6 +29,9 @@ struct SettingsView: View {
     @State private var editApiKey: String = ""
     @State private var urlSaveTimer: Timer? = nil
     @State private var apiKeySaveTimer: Timer? = nil
+    @State private var permissionSound: NotificationSound = NotificationSoundSettings.sound(for: .permissionRequest)
+    @State private var completionSound: NotificationSound = NotificationSoundSettings.sound(for: .completion)
+    @State private var previewPlayer: AVAudioPlayer? = nil
 
     var body: some View {
         List {
@@ -89,12 +93,46 @@ struct SettingsView: View {
                         .foregroundColor(.red)
                 }
             }
+
+            // 通知音 (状況別)。選択時に試聴する。
+            Section {
+                Picker("承認リクエスト", selection: $permissionSound) {
+                    ForEach(NotificationSound.allCases) { sound in
+                        Text(sound.label).tag(sound)
+                    }
+                }
+                .onChange(of: permissionSound) { newValue in
+                    NotificationSoundSettings.setSound(newValue, for: .permissionRequest)
+                    playPreview(newValue)
+                }
+                Picker("完了通知", selection: $completionSound) {
+                    ForEach(NotificationSound.allCases) { sound in
+                        Text(sound.label).tag(sound)
+                    }
+                }
+                .onChange(of: completionSound) { newValue in
+                    NotificationSoundSettings.setSound(newValue, for: .completion)
+                    playPreview(newValue)
+                }
+            } header: {
+                Text("通知音")
+            } footer: {
+                Text("選ぶと試聴できます（消音スイッチ ON では鳴りません）。Apple Watch では標準音になります。")
+            }
         }
         .navigationTitle("設定")
         .onAppear {
             editURL = appDelegate.serverURL
             editApiKey = appDelegate.apiKey
         }
+    }
+
+    private func playPreview(_ sound: NotificationSound) {
+        previewPlayer?.stop()
+        guard let fileName = sound.fileName,
+              let url = Bundle.main.url(forResource: fileName, withExtension: nil) else { return }
+        previewPlayer = try? AVAudioPlayer(contentsOf: url)
+        previewPlayer?.play()
     }
 
     private var statusColor: Color {

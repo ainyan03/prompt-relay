@@ -17,5 +17,7 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>LAN内のPrompt Relayサーバへ接続して承認リクエストを受信します。</string>
+	<key>PRAppGroupId</key>
+	<string>group.$(BUNDLE_ID_PREFIX)</string>
 </dict>
 </plist>

@@ -495,7 +495,7 @@ app.post('/notify', async (req, res) => {
   res.json({ ok: true });
 
   // APNs + Web Push 送信（fire-and-forget）
-  trySendApnsNotification(roomKey, { title: notifTitle, body: notifBody, collapseId });
+  trySendApnsNotification(roomKey, { title: notifTitle, body: notifBody, collapseId, data: { type: 'notification' } });
   trySendWebPushAll(roomKey, { title: notifTitle, body: notifBody, tag: collapseId });
 });
 

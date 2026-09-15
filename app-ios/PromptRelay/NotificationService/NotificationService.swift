@@ -18,6 +18,13 @@ class NotificationService: UNNotificationServiceExtension {
 
         let userInfo = content.userInfo
 
+        // 設定画面で選んだ通知音を状況別に適用する (標準のままなら変更しない)。
+        // Watch は NSE を実行しないため標準音のまま。
+        let selectedSound = NotificationSoundSettings.sound(for: NotificationSituation.from(userInfo: userInfo))
+        if selectedSound != .system {
+            content.sound = selectedSound.notificationSound
+        }
+
         // 古い permission_request 通知を削除（新しい通知が最新のプロンプトなので古いものは不要）
         if userInfo["type"] as? String == "permission_request" {
             removeOldPermissionNotifications(

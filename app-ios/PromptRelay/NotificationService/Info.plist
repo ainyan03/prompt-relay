@@ -9,5 +9,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>PRAppGroupId</key>
+	<string>group.$(BUNDLE_ID_PREFIX)</string>
 </dict>
 </plist>

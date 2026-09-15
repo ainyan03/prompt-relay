@@ -14,6 +14,14 @@
 		A10004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20004 /* Assets.xcassets */; };
 		A10005 /* RequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20006 /* RequestsView.swift */; };
 		A10006 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20008 /* Config.swift */; };
+		A10020 /* NotificationSoundSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20020 /* NotificationSoundSettings.swift */; };
+		A10021 /* NotificationSoundSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20020 /* NotificationSoundSettings.swift */; };
+		A10030 /* chime.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20030 /* chime.caf */; };
+		A10031 /* bell.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20031 /* bell.caf */; };
+		A10032 /* pop.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20032 /* pop.caf */; };
+		A10033 /* triple.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20033 /* triple.caf */; };
+		A10034 /* marimba.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20034 /* marimba.caf */; };
+		A10035 /* pulse.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20035 /* pulse.caf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -51,6 +59,13 @@
 		A20007 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 		A20008 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
 		A20010 /* PromptRelay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PromptRelay.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20020 /* NotificationSoundSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSoundSettings.swift; sourceTree = "<group>"; };
+		A20030 /* chime.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = chime.caf; sourceTree = "<group>"; };
+		A20031 /* bell.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = bell.caf; sourceTree = "<group>"; };
+		A20032 /* pop.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = pop.caf; sourceTree = "<group>"; };
+		A20033 /* triple.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = triple.caf; sourceTree = "<group>"; };
+		A20034 /* marimba.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = marimba.caf; sourceTree = "<group>"; };
+		A20035 /* pulse.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = pulse.caf; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -103,7 +118,9 @@
 				A20002 /* AppDelegate.swift */,
 				A20003 /* ContentView.swift */,
 				A20006 /* RequestsView.swift */,
+				A20020 /* NotificationSoundSettings.swift */,
 				A20004 /* Assets.xcassets */,
+				A40010 /* Sounds */,
 				A20005 /* PromptRelay.entitlements */,
 			);
 			path = PromptRelay;
@@ -116,6 +133,19 @@
 				8838E7012F45A419005A39C4 /* NotificationService.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A40010 /* Sounds */ = {
+			isa = PBXGroup;
+			children = (
+				A20030 /* chime.caf */,
+				A20031 /* bell.caf */,
+				A20032 /* pop.caf */,
+				A20033 /* triple.caf */,
+				A20034 /* marimba.caf */,
+				A20035 /* pulse.caf */,
+			);
+			path = Sounds;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -213,6 +243,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10004 /* Assets.xcassets in Resources */,
+				A10030 /* chime.caf in Resources */,
+				A10031 /* bell.caf in Resources */,
+				A10032 /* pop.caf in Resources */,
+				A10033 /* triple.caf in Resources */,
+				A10034 /* marimba.caf in Resources */,
+				A10035 /* pulse.caf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -223,6 +259,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10021 /* NotificationSoundSettings.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -235,6 +272,7 @@
 				A10002 /* AppDelegate.swift in Sources */,
 				A10003 /* ContentView.swift in Sources */,
 				A10005 /* RequestsView.swift in Sources */,
+				A10020 /* NotificationSoundSettings.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

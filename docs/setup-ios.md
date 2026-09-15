@@ -14,7 +14,8 @@
    - NotificationService Extension: `com.yourname.prompt-relay.NotificationService`（Xcode が自動作成する場合あり）
 3. 両方の App ID で **Push Notifications** capability を有効にする
 4. メインアプリの App ID で **Time Sensitive Notifications** capability を有効にする（集中モード中でも通知を配信）
-5. **Keys** から APNs 用キー (.p8) を発行（Team 全体で共通、1つあれば OK）
+5. 両方の App ID で **App Groups** capability を有効にし、`group.<メインアプリの Bundle ID>` を割り当てる（通知音の設定をアプリと Extension で共有するため。Xcode の自動署名で作成される場合あり）
+6. **Keys** から APNs 用キー (.p8) を発行（Team 全体で共通、1つあれば OK）
 
 ## アプリのビルド
 
@@ -35,7 +36,14 @@ cp app-ios/PromptRelay/PromptRelay/Config.swift.example app-ios/PromptRelay/Prom
 4. Bundle Identifier が `server/.env` の `APNS_BUNDLE_ID` と一致していることを確認（例: `com.yourname.prompt-relay`）
 5. **Push Notifications** capability が有効であることを確認
 6. **Time Sensitive Notifications** capability が有効であることを確認
-7. 実機にビルド・インストール
+7. 両ターゲットで **App Groups** capability が有効で、`group.<Bundle ID>` が選択されていることを確認
+8. 実機にビルド・インストール
+
+## 通知音
+
+アプリの設定タブで、承認リクエストと完了通知それぞれの通知音を選べます（選ぶと試聴できます）。
+音は `app-ios/PromptRelay/PromptRelay/Sounds/*.caf` として同梱しており、`app-ios/tools/gen-sounds.py` で再生成できます。
+Apple Watch は NotificationService Extension を実行しないため標準音のままです。
 
 ## 通信と省電力動作
 
