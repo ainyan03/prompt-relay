@@ -88,6 +88,9 @@ struct WatchContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(request.isDestructive(choice) ? .red : .green)
                 .disabled(status.sending)
+                // 最初の選択肢 (Yes) をダブルタップ (人差し指と親指) に割り当てる。
+                // 1 画面に 1 つしか割り当てられないため No は画面タップのまま。
+                .doubleTapPrimaryAction(enabled: choice.id == request.choices.first?.id)
             }
             if status.sending {
                 ProgressView()
@@ -110,6 +113,18 @@ struct WatchContentView: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.caption2)
+        }
+    }
+}
+
+private extension View {
+    /// watchOS 11 以降のダブルタップ操作を、この画面の主ボタンに割り当てる。
+    @ViewBuilder
+    func doubleTapPrimaryAction(enabled: Bool) -> some View {
+        if enabled, #available(watchOS 11.0, *) {
+            self.handGestureShortcut(.primaryAction)
+        } else {
+            self
         }
     }
 }

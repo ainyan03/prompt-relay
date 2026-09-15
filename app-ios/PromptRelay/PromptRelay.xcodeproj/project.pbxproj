@@ -30,6 +30,7 @@
 		W10033 /* triple.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20033 /* triple.caf */; };
 		W10034 /* marimba.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20034 /* marimba.caf */; };
 		W10035 /* pulse.caf in Resources */ = {isa = PBXBuildFile; fileRef = A20035 /* pulse.caf */; };
+		X10001 /* PromptRelayWatchWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = X20001 /* PromptRelayWatchWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +47,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = W50001;
 			remoteInfo = PromptRelayWatch;
+		};
+		X30001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A80001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = X50001;
+			remoteInfo = PromptRelayWatchWidget;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -72,6 +80,17 @@
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		X60004 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				X10001 /* PromptRelayWatchWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -94,6 +113,7 @@
 		A20034 /* marimba.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = marimba.caf; sourceTree = "<group>"; };
 		A20035 /* pulse.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = pulse.caf; sourceTree = "<group>"; };
 		W20001 /* PromptRelayWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PromptRelayWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		X20001 /* PromptRelayWatchWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PromptRelayWatchWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -111,11 +131,19 @@
 			);
 			target = W50001 /* PromptRelayWatch */;
 		};
+		X40002 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = X50001 /* PromptRelayWatchWidget */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8838E7022F45A419005A39C4 /* NotificationService */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (8838E70C2F45A419005A39C4 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = NotificationService; sourceTree = "<group>"; };
 		W40001 /* PromptRelayWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (W40002 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = PromptRelayWatch; sourceTree = "<group>"; };
+		X40001 /* PromptRelayWatchWidget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (X40002 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = PromptRelayWatchWidget; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -140,6 +168,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		X60002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -150,6 +185,7 @@
 				A40002 /* PromptRelay */,
 				8838E7022F45A419005A39C4 /* NotificationService */,
 				W40001 /* PromptRelayWatch */,
+				X40001 /* PromptRelayWatchWidget */,
 				A40003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -177,6 +213,7 @@
 				A20010 /* PromptRelay.app */,
 				8838E7012F45A419005A39C4 /* NotificationService.appex */,
 				W20001 /* PromptRelayWatch.app */,
+				X20001 /* PromptRelayWatchWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -247,10 +284,12 @@
 				W60001 /* Sources */,
 				W60002 /* Frameworks */,
 				W60003 /* Resources */,
+				X60004 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				X30002 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				W40001 /* PromptRelayWatch */,
@@ -261,6 +300,28 @@
 			productName = PromptRelayWatch;
 			productReference = W20001 /* PromptRelayWatch.app */;
 			productType = "com.apple.product-type.application";
+		};
+		X50001 /* PromptRelayWatchWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = X70003 /* Build configuration list for PBXNativeTarget "PromptRelayWatchWidget" */;
+			buildPhases = (
+				X60001 /* Sources */,
+				X60002 /* Frameworks */,
+				X60003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				X40001 /* PromptRelayWatchWidget */,
+			);
+			name = PromptRelayWatchWidget;
+			packageProductDependencies = (
+			);
+			productName = PromptRelayWatchWidget;
+			productReference = X20001 /* PromptRelayWatchWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -279,6 +340,9 @@
 						CreatedOnToolsVersion = 16.0;
 					};
 					W50001 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					X50001 = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
@@ -300,6 +364,7 @@
 				A50001 /* PromptRelay */,
 				8838E7002F45A419005A39C4 /* NotificationService */,
 				W50001 /* PromptRelayWatch */,
+				X50001 /* PromptRelayWatchWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -339,6 +404,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		X60003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -371,6 +443,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		X60001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -383,6 +462,11 @@
 			isa = PBXTargetDependency;
 			target = W50001 /* PromptRelayWatch */;
 			targetProxy = W30001 /* PBXContainerItemProxy */;
+		};
+		X30002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = X50001 /* PromptRelayWatchWidget */;
+			targetProxy = X30001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -700,6 +784,61 @@
 			};
 			name = Release;
 		};
+		X70001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PromptRelayWatchWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PromptRelay;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID_PREFIX).watchkitapp.widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		X70002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PromptRelayWatchWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PromptRelay;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID_PREFIX).watchkitapp.widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -735,6 +874,15 @@
 			buildConfigurations = (
 				W70001 /* Debug */,
 				W70002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		X70003 /* Build configuration list for PBXNativeTarget "PromptRelayWatchWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X70001 /* Debug */,
+				X70002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

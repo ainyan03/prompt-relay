@@ -33,6 +33,26 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         }
     }
 
+    /// 前面に来たとき、届いている通知から最新の承認リクエストを応答画面に載せる。
+    /// 通知を見逃してウィジェット等からアプリを開いた場合の入口。
+    func applicationDidBecomeActive() {
+        refreshPendingFromDeliveredNotifications()
+    }
+
+    func refreshPendingFromDeliveredNotifications() {
+        UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+            let newest = notifications
+                .sorted { $0.date > $1.date }
+                .compactMap { Self.pendingRequest(from: $0) }
+                .first
+            guard let newest else { return }
+            if WatchStatus.shared.pendingRequest?.id != newest.id {
+                WatchStatus.shared.setPending(newest)
+                WatchStatus.shared.set(\.lastEvent, "届いていた通知から承認待ちを表示")
+            }
+        }
+    }
+
     // MARK: - APNs トークン → iPhone
 
     func didRegisterForRemoteNotifications(withDeviceToken deviceToken: Data) {
