@@ -26,10 +26,21 @@ const MAX_HISTORY = Math.max(0, parseInt(process.env.MAX_HISTORY || '0', 10)); /
 
 // --- マルチデバイス管理 ---
 
+export type DevicePlatform = 'ios' | 'watchos';
+
 export interface DeviceEntry {
   token: string;
   registeredAt: number;
   lastPushAt: number | null;
+  /// 省略時は ios。watchos は APNs topic が Watch アプリの bundle ID になる。
+  platform?: DevicePlatform;
+  /// 通知種別 (payload の type) → 音ファイル名。端末側が登録時に申告する。
+  sounds?: Record<string, string>;
+}
+
+export interface DeviceOptions {
+  platform?: DevicePlatform;
+  sounds?: Record<string, string>;
 }
 
 export interface WebPushSubscription {
@@ -124,7 +135,7 @@ function evictOldest<T>(arr: T[], getTime: (item: T) => number): void {
 
 // --- APNs デバイス管理 ---
 
-export function registerDevice(roomKey: string, token: string): void {
+export function registerDevice(roomKey: string, token: string, options: DeviceOptions = {}): void {
   // 他ルームから同一トークンを削除（ルームキー変更時の重複防止）
   for (const [key, room] of rooms) {
     if (key === roomKey) continue;
@@ -139,12 +150,14 @@ export function registerDevice(roomKey: string, token: string): void {
   const existing = room.apnsDevices.find(d => d.token === token);
   if (existing) {
     existing.registeredAt = Date.now();
+    existing.platform = options.platform;
+    existing.sounds = options.sounds;
     return;
   }
   if (room.apnsDevices.length >= MAX_DEVICES) {
     evictOldest(room.apnsDevices, d => d.lastPushAt ?? d.registeredAt);
   }
-  room.apnsDevices.push({ token, registeredAt: Date.now(), lastPushAt: null });
+  room.apnsDevices.push({ token, registeredAt: Date.now(), lastPushAt: null, platform: options.platform, sounds: options.sounds });
 }
 
 export function getDeviceTokens(roomKey: string): DeviceEntry[] {

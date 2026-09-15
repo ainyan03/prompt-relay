@@ -43,7 +43,35 @@ cp app-ios/PromptRelay/PromptRelay/Config.swift.example app-ios/PromptRelay/Prom
 
 アプリの設定タブで、承認リクエストと完了通知それぞれの通知音を選べます（選ぶと試聴できます）。
 音は `app-ios/PromptRelay/PromptRelay/Sounds/*.caf` として同梱しており、`app-ios/tools/gen-sounds.py` で再生成できます。
-Apple Watch は NotificationService Extension を実行しないため標準音のままです。
+Apple Watch アプリ（下記）を入れていれば、同じ選択が Watch の通知にも適用されます。
+
+## Apple Watch アプリ
+
+iPhone の通知をミラー表示するだけでは Watch の通知音を変えられないため、Watch 用のコンパニオンアプリ
+（`PromptRelayWatch` ターゲット）を用意しています。
+
+- 通知はサーバから Watch アプリへ直接届き、iPhone で選んだ通知音で鳴ります
+- 承認は **通知をタップして Watch アプリを開き、画面のボタンで応答**します（通知に付くボタンは
+  watchOS の制約で即時に届かず、iPhone アプリを次に開いたときに遅れて届きます）
+- Watch はサーバと直接通信しません。トークンの登録や応答はすべて iPhone アプリが中継するので、
+  サーバが Tailscale などの VPN 越しでも、自己署名証明書でも動きます。応答の中継には iPhone が
+  近くにある必要があります
+
+### セットアップ
+
+1. Apple Developer Portal の **Devices** に Watch を登録する。UDID は Xcode の Devices and Simulators
+   に Watch が表示されていればそこから、表示されない場合は
+   `xcrun devicectl list devices` で識別子を調べ `xcrun devicectl device info details --device <識別子>` で確認できる
+2. Portal の **App IDs** に `<Bundle ID>.watchkitapp` が作られ、**Push Notifications** が有効になっていることを確認する
+   （Xcode の自動署名で作られる。作られない場合は手動で追加）
+3. Xcode で `PromptRelay` スキームを iPhone に Run する（Watch アプリも同梱される）
+4. iPhone の **Watch** アプリ → PromptRelay をインストールする。Watch 側で
+   設定 → プライバシーとセキュリティ → デベロッパモード をオンにするよう求められたらオンにする
+5. Watch で PromptRelay を開き、「詳細」の「登録」が `登録済 (200)` になっていれば完了
+
+Xcode から Run し直しても Watch 側のアプリが更新されないことがあります。Watch アプリの「詳細」に
+ある build 時刻が古いままなら、iPhone の Watch アプリから一度削除して入れ直してください。
+Watch のトークンは再インストールで変わりますが、iPhone アプリが検知して登録し直します。
 
 ## 通信と省電力動作
 

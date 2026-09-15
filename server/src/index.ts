@@ -118,8 +118,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const match = auth.match(/^Bearer\s+(.+)$/i);
   const key = match?.[1] || '';
   if (!key) {
+    // 認証失敗は切り分けに要るので残す (中継元のクライアントがキーを持てていない等)
+    console.log(`[auth] 401 (no key) ${req.method} ${req.path}`);
     res.status(401).json({ error: 'unauthorized' });
   } else if (key.length < MIN_KEY_LENGTH || key.length > MAX_KEY_LENGTH) {
+    console.log(`[auth] 401 (bad key length) ${req.method} ${req.path}`);
     res.status(401).json({ error: `Room key must be ${MIN_KEY_LENGTH}-${MAX_KEY_LENGTH} characters` });
   } else {
     req.roomKey = key;
@@ -129,13 +132,20 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // デバイストークン登録（APNs）
 app.post('/register', (req, res) => {
-  const { token } = req.body;
+  const { token, platform, sounds } = req.body;
   if (!token || typeof token !== 'string') {
     res.status(400).json({ error: 'token is required' });
     return;
   }
-  registerDevice(req.roomKey!, token);
-  console.log(`[register] Device token registered: ${token.substring(0, 16)}... (total: ${getDeviceTokens(req.roomKey!).length})`);
+  // platform: 'watchos' は Watch アプリ自身の登録 (topic が変わる)。省略時は iOS。
+  // sounds: { permission_request: 'chime.caf', notification: 'bell.caf' } のように
+  // 通知種別ごとの音ファイル名を申告できる (Watch はペイロードの sound をそのまま使うため)。
+  const devicePlatform = platform === 'watchos' ? 'watchos' : 'ios';
+  const deviceSounds = sounds && typeof sounds === 'object'
+    ? Object.fromEntries(Object.entries(sounds as Record<string, unknown>).filter(([, v]) => typeof v === 'string' && /^[\w.-]+$/.test(v as string))) as Record<string, string>
+    : undefined;
+  registerDevice(req.roomKey!, token, { platform: devicePlatform, sounds: deviceSounds });
+  console.log(`[register] Device token registered: ${token.substring(0, 16)}... platform=${devicePlatform}${deviceSounds ? ` sounds=${JSON.stringify(deviceSounds)}` : ''} (total: ${getDeviceTokens(req.roomKey!).length})`);
   res.json({ ok: true });
 });
 
@@ -172,16 +182,20 @@ async function trySendApnsNotification(roomKey: string, payload: ApnsNotificatio
   const devices = getDeviceTokens(roomKey);
   if (devices.length === 0 || !isConfigured()) return;
   const targets = devices.map(d => d.token);
+  const notifType = typeof payload.data?.type === 'string' ? payload.data.type : undefined;
 
   const results = await Promise.allSettled(
-    targets.map(token => sendNotification(token, payload))
+    devices.map(d => sendNotification(d.token, payload, {
+      platform: d.platform,
+      sound: notifType ? d.sounds?.[notifType] : undefined,
+    }))
   );
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     const token = targets[i];
     if (r.status === 'fulfilled') {
       touchDevice(roomKey, token);
-      console.log(`[apns] Notification sent to ${token.substring(0, 16)}...`);
+      console.log(`[apns] Notification sent to ${token.substring(0, 16)}... (${devices[i].platform ?? 'ios'})`);
     } else {
       if (isApnsBadDevice(r.reason)) {
         console.log(`[apns] Bad device token, removing: ${token.substring(0, 16)}...`);
@@ -199,7 +213,7 @@ async function trySendApnsSilent(roomKey: string, data: Record<string, unknown>,
   const targets = devices.map(d => d.token);
 
   const results = await Promise.allSettled(
-    targets.map(token => sendSilentNotification(token, data))
+    devices.map(d => sendSilentNotification(d.token, data, d.platform))
   );
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
@@ -387,6 +401,8 @@ app.post('/permission-request/:id/respond', (req, res) => {
 
   const request = getRequest(roomKey, req.params.id);
   if (!request) {
+    // 期限切れ・キャンセル済みへの遅延応答 (Watch 経由のキュー配送等) を追えるように残す
+    console.log(`[respond] ${req.params.id}: not found (expired or cancelled) [source=${source || 'unknown'}]`);
     res.status(404).json({ error: 'not found' });
     return;
   }
@@ -416,6 +432,7 @@ app.post('/permission-request/:id/respond', (req, res) => {
 
   const ok = respondToRequest(roomKey, req.params.id, actualResponse);
   if (!ok) {
+    console.log(`[respond] ${req.params.id}: already responded [source=${source || 'unknown'}]`);
     res.status(404).json({ error: 'already responded' });
     return;
   }

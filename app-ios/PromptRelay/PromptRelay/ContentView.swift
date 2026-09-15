@@ -103,6 +103,7 @@ struct SettingsView: View {
                 }
                 .onChange(of: permissionSound) { newValue in
                     NotificationSoundSettings.setSound(newValue, for: .permissionRequest)
+                    appDelegate.watchSoundSettingsChanged()
                     playPreview(newValue)
                 }
                 Picker("完了通知", selection: $completionSound) {
@@ -112,12 +113,13 @@ struct SettingsView: View {
                 }
                 .onChange(of: completionSound) { newValue in
                     NotificationSoundSettings.setSound(newValue, for: .completion)
+                    appDelegate.watchSoundSettingsChanged()
                     playPreview(newValue)
                 }
             } header: {
                 Text("通知音")
             } footer: {
-                Text("選ぶと試聴できます（消音スイッチ ON では鳴りません）。Apple Watch では標準音になります。")
+                Text("選ぶと試聴できます（消音スイッチ ON では鳴りません）。Apple Watch アプリを入れていれば Watch にも同じ音が適用されます。")
             }
         }
         .navigationTitle("設定")

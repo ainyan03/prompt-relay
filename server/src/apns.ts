@@ -101,14 +101,24 @@ interface NotificationPayload {
   data?: Record<string, unknown>;
 }
 
+export type ApnsPlatform = 'ios' | 'watchos';
+
+/// APNs topic。Watch アプリへ直接届ける場合は Watch アプリの bundle ID
+/// (= iOS アプリの bundle ID + ".watchkitapp") を指定する必要がある。
+export function apnsTopic(platform: ApnsPlatform = 'ios'): string {
+  const bundleId = process.env.APNS_BUNDLE_ID!;
+  return platform === 'watchos' ? `${bundleId}.watchkitapp` : bundleId;
+}
+
 async function sendApnsRequest(
   deviceToken: string,
   apnsPayload: Record<string, unknown>,
   pushType: 'alert' | 'background',
   priority: '10' | '5',
-  collapseId?: string
+  collapseId?: string,
+  platform: ApnsPlatform = 'ios'
 ): Promise<void> {
-  const bundleId = process.env.APNS_BUNDLE_ID!;
+  const bundleId = apnsTopic(platform);
   const body = JSON.stringify(apnsPayload);
   const token = getJwt();
 
@@ -187,7 +197,14 @@ function attemptApnsRequest(headers: Record<string, string | number>, body: stri
   });
 }
 
-export async function sendNotification(deviceToken: string, payload: NotificationPayload): Promise<void> {
+export interface SendOptions {
+  platform?: ApnsPlatform;
+  /// 音ファイル名 (端末の bundle に同梱されているもの)。省略時は default。
+  /// iPhone は NotificationService が設定値で上書きするため実質 Watch 向け。
+  sound?: string;
+}
+
+export async function sendNotification(deviceToken: string, payload: NotificationPayload, options: SendOptions = {}): Promise<void> {
   const apnsPayload = {
     aps: {
       alert: {
@@ -195,7 +212,7 @@ export async function sendNotification(deviceToken: string, payload: Notificatio
         ...(payload.subtitle && { subtitle: payload.subtitle }),
         body: payload.body,
       },
-      sound: 'default',
+      sound: options.sound || 'default',
       'mutable-content': 1,
       'interruption-level': 'time-sensitive',
       ...(payload.category && { category: payload.category }),
@@ -203,19 +220,20 @@ export async function sendNotification(deviceToken: string, payload: Notificatio
     ...payload.data,
   };
 
-  return sendApnsRequest(deviceToken, apnsPayload, 'alert', '10', payload.collapseId);
+  return sendApnsRequest(deviceToken, apnsPayload, 'alert', '10', payload.collapseId, options.platform);
 }
 
 export async function sendSilentNotification(
   deviceToken: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  platform: ApnsPlatform = 'ios'
 ): Promise<void> {
   const apnsPayload = {
     aps: { 'content-available': 1 },
     ...data,
   };
 
-  return sendApnsRequest(deviceToken, apnsPayload, 'background', '5');
+  return sendApnsRequest(deviceToken, apnsPayload, 'background', '5', undefined, platform);
 }
 
 export function isConfigured(): boolean {
