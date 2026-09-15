@@ -5,8 +5,11 @@ import WatchKit
 
 // Watch アプリ側の通知処理。サーバとは直接通信せず、すべて iPhone アプリ経由にする。
 //   - APNs トークン → iPhone (applicationContext + transferUserInfo)。iPhone がサーバへ登録する
-//   - 通知ボタン (CHOICE_n) → iPhone (sendMessage、不達なら transferUserInfo)。iPhone がサーバへ転送する
+//   - 承認応答 → 通知をタップしてアプリを開き、前面のボタンから iPhone へ sendMessage。iPhone がサーバへ転送する
 // 通知自体は APNs から Watch アプリ宛てに直接届く (iPhone 経由ではない)。
+// 通知にアクションボタンは付けない: ボタン処理中の Watch アプリはバックグラウンド扱いで
+// sendMessage が使えず、キュー送信は iPhone アプリの前面復帰まで届かないため、
+// 「押したのに反映されない」体験になる。
 final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCenterDelegate, WCSessionDelegate {
     private var deviceTokenHex: String {
         get { UserDefaults.standard.string(forKey: "deviceToken") ?? "" }
@@ -15,7 +18,9 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
 
     func applicationDidFinishLaunching() {
         UNUserNotificationCenter.current().delegate = self
-        registerNotificationCategories()
+        // サーバは category=PERMISSION_REQUEST を付けて送るが、Watch 側ではその
+        // カテゴリを登録しない (未登録カテゴリはボタン無しの通知として表示される)。
+        UNUserNotificationCenter.current().setNotificationCategories([])
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             print("[PromptRelayWatch] notification auth granted=\(granted) error=\(String(describing: error))")
             DispatchQueue.main.async {
@@ -84,18 +89,6 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         }
     }
 
-    // MARK: - 通知カテゴリ (iOS 側のフォールバックと同じ)
-
-    private func registerNotificationCategories() {
-        let actions = [
-            UNNotificationAction(identifier: "CHOICE_1", title: "Yes", options: []),
-            UNNotificationAction(identifier: "CHOICE_2", title: "Yes (以降スキップ)", options: []),
-            UNNotificationAction(identifier: "CHOICE_3", title: "No", options: [.destructive]),
-        ]
-        let category = UNNotificationCategory(identifier: "PERMISSION_REQUEST", actions: actions, intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([category])
-    }
-
     // MARK: - 通知の表示と応答 (iPhone 経由)
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -136,9 +129,9 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 }
             }
         }, errorHandler: { error in
-            // iPhone に即時到達できない → キュー送信 (iPhone アプリの前面復帰時に届く)
+            // iPhone に即時到達できない (圏外等) → キュー送信 (iPhone アプリの前面復帰時に届く)
             session.transferUserInfo(message)
-            WatchStatus.shared.set(\.lastEvent, "応答 choice=\(choice) → キュー送信 (\(error.localizedDescription))")
+            WatchStatus.shared.set(\.lastEvent, "応答 choice=\(choice) → iPhone 不達、後で送信 (\(error.localizedDescription))")
             DispatchQueue.main.async {
                 WatchStatus.shared.sending = false
                 WatchStatus.shared.pendingRequest = nil
@@ -147,37 +140,12 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        let userInfo = response.notification.request.content.userInfo
-        let actionId = response.actionIdentifier
-        if actionId == UNNotificationDefaultActionIdentifier {
-            // 通知本文のタップ: アプリが前面に開くので、そこで応答する
-            if let pending = Self.pendingRequest(from: response.notification) {
-                WatchStatus.shared.setPending(pending)
-                WatchStatus.shared.set(\.lastEvent, "通知を開いた")
-            }
-            completionHandler()
-            return
+        // 通知本文のタップ: アプリが前面に開くので、そこで応答する
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let pending = Self.pendingRequest(from: response.notification) {
+            WatchStatus.shared.setPending(pending)
+            WatchStatus.shared.set(\.lastEvent, "通知を開いた")
         }
-        guard actionId.hasPrefix("CHOICE_"),
-              let choice = Int(actionId.dropFirst("CHOICE_".count)),
-              let requestId = userInfo["request_id"] as? String else {
-            completionHandler()
-            return
-        }
-        let message: [String: Any] = ["respondRequestId": requestId, "choice": choice]
-        let session = WCSession.default
-        print("[PromptRelayWatch] respond via iPhone: request=\(requestId) choice=\(choice) reachable=\(session.isReachable)")
-        // sendMessage は iPhone アプリをバックグラウンドで起こして即時に届く。
-        // 失敗時は transferUserInfo (キュー配送) に切り替え、応答を取りこぼさない。
-        session.sendMessage(message, replyHandler: { reply in
-            let ok = reply["ok"] as? Bool ?? false
-            WatchStatus.shared.set(\.lastEvent, "応答 choice=\(choice) → \(ok ? "OK" : "失敗")")
-            center.removeDeliveredNotifications(withIdentifiers: [response.notification.request.identifier])
-            DispatchQueue.main.async { completionHandler() }
-        }, errorHandler: { error in
-            session.transferUserInfo(message)
-            WatchStatus.shared.set(\.lastEvent, "応答 choice=\(choice) → キュー送信 (\(error.localizedDescription))")
-            DispatchQueue.main.async { completionHandler() }
-        })
+        completionHandler()
     }
 }
