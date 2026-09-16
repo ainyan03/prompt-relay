@@ -56,7 +56,10 @@ iPhone の通知をミラー表示するだけでは Watch の通知音を変え
 - Watch アプリを開いた画面では、**ダブルタップ**（人差し指と親指を 2 回合わせる）で最初の選択肢
   （Yes）を送れます（watchOS 11 以降、Series 9 / Ultra 2 以降）
 - Watch アプリを開いている間は数秒おきに承認待ちを取り直すので、通知の配送が遅れてもボタンが出ます。
-  別の端末で先に応答した枠は自動で消えます
+  新しい承認待ちが画面に出たときは通知と同じ振動で知らせます（同じリクエストで二度は鳴りません）。
+  別の端末で先に応答した枠と、その通知は自動で消えます
+- iPhone のロックが解除されて画面が点いている間は、iOS が通知を iPhone 側に出して Watch では鳴らさない
+  ことがあります（Apple の通知転送の規則）。Watch で受けたいときは iPhone をロックしておいてください
 - 通知を見逃しても、Watch アプリを開けば届いている承認リクエストが表示されます。スマートスタックに
   **Prompt Relay ウィジェット**を追加しておくと、そこからアプリを開けます（文字盤を長押し →
   スマートスタックの編集、または文字盤でクラウンを回してスマートスタックを開き「+」から追加）
@@ -72,7 +75,8 @@ iPhone の通知をミラー表示するだけでは Watch の通知音を変え
 1. Apple Developer Portal の **Devices** に Watch を登録する。UDID は Xcode の Devices and Simulators
    に Watch が表示されていればそこから、表示されない場合は
    `xcrun devicectl list devices` で識別子を調べ `xcrun devicectl device info details --device <識別子>` で確認できる
-2. Portal の **App IDs** に `<Bundle ID>.watchkitapp` が作られ、**Push Notifications** が有効になっていることを確認する
+2. Portal の **App IDs** に `<Bundle ID>.watchkitapp` が作られ、**Push Notifications** と
+   **Time Sensitive Notifications** が有効になっていることを確認する
    （Xcode の自動署名で作られる。作られない場合は手動で追加）
 3. Xcode で `PromptRelay` スキームを iPhone に Run する（Watch アプリも同梱される）
 4. iPhone の **Watch** アプリ → PromptRelay をインストールする。Watch 側で

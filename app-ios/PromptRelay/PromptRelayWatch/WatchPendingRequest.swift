@@ -15,19 +15,22 @@ struct WatchPendingRequest: Identifiable, Equatable {
     /// 応答後に消すための通知識別子
     let notificationIdentifier: String
 
-    /// 通知の userInfo と表示内容から組み立てる。承認リクエスト以外 (choices 無し) は nil。
+    /// 通知の userInfo と表示内容から組み立てる。choices 無しの旧形式は固定 3 択を補う。
     init?(userInfo: [AnyHashable: Any], title: String, body: String, notificationIdentifier: String) {
-        guard let requestId = userInfo["request_id"] as? String,
-              let raw = userInfo["choices"] as? [[String: Any]], !raw.isEmpty else { return nil }
-        let choices = raw.compactMap { c -> Choice? in
+        guard let requestId = userInfo["request_id"] as? String else { return nil }
+        let raw = userInfo["choices"] as? [[String: Any]] ?? []
+        let parsedChoices = raw.compactMap { c -> Choice? in
             guard let number = c["number"] as? Int, let text = c["text"] as? String else { return nil }
             return Choice(number: number, text: text)
         }
-        guard !choices.isEmpty else { return nil }
         self.id = requestId
         self.title = title
         self.body = body
-        self.choices = choices
+        self.choices = parsedChoices.isEmpty ? [
+            Choice(number: 1, text: "Yes"),
+            Choice(number: 2, text: "Yes (以降スキップ)"),
+            Choice(number: 3, text: "No"),
+        ] : parsedChoices
         self.notificationIdentifier = notificationIdentifier
     }
 

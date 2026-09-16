@@ -93,10 +93,20 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         return sounds
     }
 
+    /// Watch 登録は常に 1 本だけ飛ばす。飛行中に再要求 (通知音の変更等) が来たら完了後にもう一度
+    /// 現在値で登録する。並行させると古い設定の完了が新しい設定を上書きしうる (サーバは後着優先)。
+    private var watchRegistrationInFlight = false
+    private var watchRegistrationPending = false
+
     func registerWatchTokenWithServer() {
         let token = WatchBridge.shared.watchDeviceToken
         guard connectionEnabled, isApiKeyValid, !token.isEmpty,
               let url = URL(string: "\(serverURL)/register") else { return }
+        if watchRegistrationInFlight {
+            watchRegistrationPending = true
+            return
+        }
+        watchRegistrationInFlight = true
         // iPhone トークンと同じ世代ガード。登録中に接続 OFF・URL/キー変更・Watch トークン変更が
         // 起きると、先に出た解除より後に登録が完了してサーバに古い宛先が残る。
         let generation = registrationGeneration
@@ -117,14 +127,24 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             let result = error.map { "エラー: \($0.localizedDescription)" } ?? (code == 200 ? "登録済 (200)" : "HTTP \(code)")
             print("[PromptRelay] Watch token register → \(result)")
             DispatchQueue.main.async {
+                self.watchRegistrationInFlight = false
                 let stale = self.registrationGeneration != generation
                     || !self.connectionEnabled
                     || WatchBridge.shared.watchDeviceToken != token
-                if stale, code == 200 {
-                    self.unregisterWatchToken(token, serverURL: registrationServerURL, apiKey: registrationApiKey)
+                if stale {
+                    // 古い世代の登録がサーバに残ったかもしれない (応答が失われた場合も処理済みでありうるので
+                    // 状態コードによらず解除する。解除は冪等)。解除はサーバ側で世代を区別できず
+                    // 同じ宛先への新しい登録も消すので、解除完了後に現在の設定で登録し直して収束させる。
+                    self.unregisterWatchToken(token, serverURL: registrationServerURL, apiKey: registrationApiKey) {
+                        self.registerWatchTokenWithServer()
+                    }
                     return
                 }
                 WatchBridge.shared.notifyWatch(registerResult: result)
+                if self.watchRegistrationPending {
+                    self.watchRegistrationPending = false
+                    self.registerWatchTokenWithServer()
+                }
             }
         }.resume()
     }
@@ -138,16 +158,22 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         unregisterWatchToken(token, serverURL: serverURL, apiKey: apiKey)
     }
 
-    private func unregisterWatchToken(_ token: String, serverURL: String, apiKey: String) {
+    /// completion は通信の成否によらず main で 1 回呼ぶ (収束のための再登録に使う)
+    private func unregisterWatchToken(_ token: String, serverURL: String, apiKey: String, completion: (() -> Void)? = nil) {
         guard (8...128).contains(apiKey.count), !serverURL.isEmpty, !token.isEmpty,
-              let url = URL(string: "\(serverURL)/unregister") else { return }
+              let url = URL(string: "\(serverURL)/unregister") else {
+            completion?()
+            return
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token])
         request.timeoutInterval = 5
-        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+        URLSession.shared.dataTask(with: request) { _, _, _ in
+            if let completion { DispatchQueue.main.async(execute: completion) }
+        }.resume()
     }
 
     /// 通知音の設定変更時に呼ぶ (Watch 宛ての音はサーバ側で決まるため再申告が要る)
@@ -201,7 +227,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         print("[PromptRelay] respond relayed from Watch: request=\(requestId) choice=\(choice)")
         // WCSession の delegate はバックグラウンドキューで呼ばれる。UIKit の背景実行枠は main で扱う。
         DispatchQueue.main.async {
-            self.sendChoiceResponse(requestId: requestId, choice: choice, source: "watch", completion: completion)
+            self.sendChoiceResponse(requestId: requestId, answer: .choice(choice), source: "watch", completion: completion)
         }
     }
 
@@ -210,19 +236,21 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         // フォールバック用カテゴリ（NotificationService Extension が動かなかった場合に使用）
         // 注意: setNotificationCategories は全カテゴリを上書きするため、
         // NSE が登録した動的カテゴリも含めて再登録する
-        // 3選択肢パターン（Yes / Yes(以降スキップ) / No）
+        // フォールバックは番号ではなく意味 (allow / allow_all / deny) を送る。番号は実際の選択肢に
+        // 依存し、NSE が動かなかった通知の固定番号は 2 択のリクエストでは存在しない番号になる。
+        // サーバがリクエストの選択肢に合わせて送信キーへ解決する (resolveSendKey)。
         let choice1 = UNNotificationAction(
-            identifier: "CHOICE_1",
+            identifier: "ALLOW",
             title: "Yes",
             options: []
         )
         let choice2 = UNNotificationAction(
-            identifier: "CHOICE_2",
+            identifier: "ALLOW_ALL",
             title: "Yes (以降スキップ)",
             options: []
         )
         let choice3 = UNNotificationAction(
-            identifier: "CHOICE_3",
+            identifier: "DENY",
             title: "No",
             options: [.destructive]
         )
@@ -298,6 +326,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         connectionEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "connectionEnabled")
         if enabled {
+            // Watch は iPhone の通知許可と独立に配信されるので、iPhone トークンの有無に関係なく登録する
+            registerWatchTokenWithServer()
             guard !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") else { return }
             registerTokenWithServer(deviceToken, force: true)
         } else {
@@ -369,6 +399,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         apiKey = key
         UserDefaults.standard.removeObject(forKey: "apiKey")
+        registerWatchTokenWithServer()
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
             registerTokenWithServer(deviceToken, force: true)
         }
@@ -457,21 +488,49 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         print("[PromptRelay] didReceive action=\(actionId) category=\(categoryId) requestId=\(payloadRequestId ?? "nil") serverURL=\(serverURL.isEmpty ? "(empty)" : "set")")
 
-        // CHOICE_N 形式（動的カテゴリ・フォールバックカテゴリ共通）
+        // CHOICE_N 形式（NSE が付けた動的カテゴリ）
         if actionId.hasPrefix("CHOICE_"), let choiceStr = actionId.split(separator: "_").last, let choiceNumber = Int(choiceStr) {
             if let id = payloadRequestId {
-                sendChoiceResponse(requestId: id, choice: choiceNumber) { _ in completionHandler() }
+                sendChoiceResponse(requestId: id, answer: .choice(choiceNumber)) { _ in completionHandler() }
                 return
             } else {
                 print("[PromptRelay] Warning: CHOICE action but no request_id in payload")
+            }
+        }
+        // ALLOW / ALLOW_ALL / DENY（フォールバックカテゴリ。サーバが選択肢番号へ解決する）
+        if let legacy = ["ALLOW": "allow", "ALLOW_ALL": "allow_all", "DENY": "deny"][actionId] {
+            if let id = payloadRequestId {
+                sendChoiceResponse(requestId: id, answer: .response(legacy)) { _ in completionHandler() }
+                return
+            } else {
+                print("[PromptRelay] Warning: \(actionId) action but no request_id in payload")
             }
         }
 
         completionHandler()
     }
 
-    // MARK: - サーバに応答送信（選択肢番号ベース、リトライ付き）
-    private func sendChoiceResponse(requestId: String, choice: Int, source: String = "notification", completion: ((ChoiceResponseOutcome) -> Void)? = nil) {
+    /// 応答の中身。choice は選択肢番号、response はサーバ側で番号に解決する意味 (allow / allow_all / deny)
+    enum Answer {
+        case choice(Int)
+        case response(String)
+
+        var bodyFields: [String: Any] {
+            switch self {
+            case .choice(let n): return ["choice": n]
+            case .response(let r): return ["response": r]
+            }
+        }
+        var description: String {
+            switch self {
+            case .choice(let n): return "choice=\(n)"
+            case .response(let r): return "response=\(r)"
+            }
+        }
+    }
+
+    // MARK: - サーバに応答送信（リトライ付き）
+    private func sendChoiceResponse(requestId: String, answer: Answer, source: String = "notification", completion: ((ChoiceResponseOutcome) -> Void)? = nil) {
         // Cold launch 時に serverURL が空の場合、UserDefaults から再読み込み
         var effectiveURL = serverURL
         if effectiveURL.isEmpty {
@@ -485,7 +544,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             return
         }
 
-        print("[PromptRelay] sendChoiceResponse: request=\(requestId) choice=\(choice)")
+        print("[PromptRelay] sendChoiceResponse: request=\(requestId) \(answer.description)")
 
         // バックグラウンド実行時間を確保（Apple Watch 応答時にプロセスが停止されるのを防ぐ）
         var backgroundTaskId = UIBackgroundTaskIdentifier.invalid
@@ -507,7 +566,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             finish()
         }
 
-        sendWithRetry(url: url, choice: choice, source: source, attempt: 1, maxAttempts: 3) { statusCode in
+        sendWithRetry(url: url, answer: answer, source: source, attempt: 1, maxAttempts: 3) { statusCode in
             switch statusCode {
             case 200: outcome = .sent
             // 404 = not found / already responded: 別端末で回答済みか期限切れ。通知は消してよい
@@ -515,7 +574,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             default: outcome = .failed
             }
             guard outcome != .failed else {
-                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) choice=\(choice) status=\(statusCode.map(String.init) ?? "none")")
+                print("[PromptRelay] Choice send failed after all retries: request=\(requestId) \(answer.description) status=\(statusCode.map(String.init) ?? "none")")
                 finish()
                 return
             }
@@ -526,12 +585,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
     }
 
     /// 完了時に HTTP ステータス (通信失敗は nil) を返す
-    private func sendWithRetry(url: URL, choice: Int, source: String, attempt: Int, maxAttempts: Int, completion: @escaping (Int?) -> Void) {
+    private func sendWithRetry(url: URL, answer: Answer, source: String, attempt: Int, maxAttempts: Int, completion: @escaping (Int?) -> Void) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuth(to: &request)
-        var body: [String: Any] = ["choice": choice, "source": source]
+        var body: [String: Any] = answer.bodyFields
+        body["source"] = source
         if !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
             body["device_token"] = deviceToken
         }
@@ -544,13 +604,13 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                 if attempt < maxAttempts {
                     let delay = pow(2.0, Double(attempt - 1)) // 1秒, 2秒, 4秒...
                     DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                        self.sendWithRetry(url: url, choice: choice, source: source, attempt: attempt + 1, maxAttempts: maxAttempts, completion: completion)
+                        self.sendWithRetry(url: url, answer: answer, source: source, attempt: attempt + 1, maxAttempts: maxAttempts, completion: completion)
                     }
                 } else {
                     completion(nil)
                 }
             } else if let http = httpResponse as? HTTPURLResponse {
-                print("[PromptRelay] Choice sent: \(choice) (HTTP \(http.statusCode), attempt \(attempt))")
+                print("[PromptRelay] Choice sent: \(answer.description) (HTTP \(http.statusCode), attempt \(attempt))")
                 completion(http.statusCode)
             } else {
                 completion(nil)
@@ -575,6 +635,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         serverURL = url
         UserDefaults.standard.set(url, forKey: "serverURL")
+        registerWatchTokenWithServer()
         if connectionEnabled, !deviceToken.isEmpty, !deviceToken.hasPrefix("Error") {
             registerTokenWithServer(deviceToken, force: true)
         }

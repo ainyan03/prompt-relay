@@ -85,9 +85,6 @@ class NotificationService: UNNotificationServiceExtension {
             options: []
         )
 
-        // カテゴリ識別子を差し替え（サーバからは PERMISSION_REQUEST で送られてくる）
-        content.categoryIdentifier = categoryId
-
         UNUserNotificationCenter.current().getNotificationCategories { existingCategories in
             var categories = existingCategories
             // PERMISSION_REQUEST（フォールバック）は維持しつつ、固有カテゴリを追加
@@ -96,6 +93,9 @@ class NotificationService: UNNotificationServiceExtension {
             categories.insert(requestCategory)
             UNUserNotificationCenter.current().setNotificationCategories(categories)
 
+            // カテゴリ識別子の差し替えは登録が済んでから (サーバからは PERMISSION_REQUEST で届く)。
+            // 先に差し替えると、時間切れで返した通知が未登録カテゴリになり、静的ボタンまで失う。
+            content.categoryIdentifier = categoryId
             contentHandler(content)
         }
     }

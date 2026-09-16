@@ -173,13 +173,20 @@ function getRoom(roomKey: string): RoomState | undefined {
 }
 
 function evictOldestRoom(): void {
+  // 未応答の承認を抱えるルームは後回しにする。消すと、そのルームの端末は空の一覧を「承認待ちなし」と
+  // 受け取って通知を消し、フックは応答を待ち続ける。全ルームに未応答がある場合だけ最古を消す。
+  const hasPending = (room: RoomState) => Array.from(room.requests.values()).some(r => !r.response);
   let oldestKey: string | null = null;
   let oldestTime = Infinity;
-  for (const [key, room] of rooms) {
-    if (room.lastActivityAt < oldestTime) {
-      oldestTime = room.lastActivityAt;
-      oldestKey = key;
+  for (const pass of [false, true]) {
+    for (const [key, room] of rooms) {
+      if (!pass && hasPending(room)) continue;
+      if (room.lastActivityAt < oldestTime) {
+        oldestTime = room.lastActivityAt;
+        oldestKey = key;
+      }
     }
+    if (oldestKey) break;
   }
   if (oldestKey) {
     rooms.delete(oldestKey);
@@ -359,8 +366,9 @@ export function createRequest(roomKey: string, id: string, tool_name: string, to
 export function resolveSendKey(req: PermissionRequest, response: 'allow' | 'deny' | 'allow_all'): string {
   const choices = req.choices;
   if (!choices.length) {
-    // choices がない場合のフォールバック
-    return response === 'deny' ? '3' : '1';
+    // choices がない場合のフォールバック (クライアントの固定ボタン 1=Yes, 2=Yes(以降スキップ), 3=No)
+    if (response === 'deny') return '3';
+    return response === 'allow_all' ? '2' : '1';
   }
 
   if (response === 'allow') {
@@ -369,14 +377,15 @@ export function resolveSendKey(req: PermissionRequest, response: 'allow' | 'deny
   }
 
   if (response === 'allow_all') {
-    // "don't ask again" / "省略" を含む選択肢を探す
+    // "don't ask again" / "allow all" / "during this session" / "省略" を含む選択肢を探す
     const alwaysChoice = choices.find(c =>
-      /don.t ask again|always|省略/i.test(c.text)
+      /don.t ask again|always|allow all|during this session|省略/i.test(c.text)
     );
     if (alwaysChoice) {
       return String(alwaysChoice.number);
     }
     // 見つからなければ最初の選択肢
+    console.log('[respond] allow_all choice not found; falling back to the first choice');
     return String(choices[0].number);
   }
 
@@ -384,11 +393,16 @@ export function resolveSendKey(req: PermissionRequest, response: 'allow' | 'deny
   return String(choices[choices.length - 1].number);
 }
 
-// 未応答のまま expires_at を超えたリクエストを expired にする
-function expireIfStale(req: PermissionRequest): void {
+// 未応答のまま expires_at を超えたリクエストを expired にする。
+// 遷移した ID は溜めておき、定期 cleanup の呼び出し側が WebSocket と dismiss で端末へ知らせる
+// (読み取り時に遷移しただけでは、WebSocket だけを見ている iPhone の画面に反映されない)。
+const newlyExpired: { roomKey: string; id: string }[] = [];
+
+function expireIfStale(roomKey: string, req: PermissionRequest): void {
   if (!req.response && Date.now() > req.expires_at) {
     req.response = 'expired';
     req.responded_at = Date.now();
+    newlyExpired.push({ roomKey, id: req.id });
   }
 }
 
@@ -396,7 +410,7 @@ export function getRequest(roomKey: string, id: string): PermissionRequest | und
   const room = getRoom(roomKey);
   if (!room) return undefined;
   const req = room.requests.get(id);
-  if (req) expireIfStale(req);
+  if (req) expireIfStale(roomKey, req);
   return req;
 }
 
@@ -453,32 +467,43 @@ export function getAllRequests(roomKey: string): PermissionRequest[] {
   const room = getRoom(roomKey);
   if (!room) return [];
   const all = Array.from(room.requests.values());
-  all.forEach(expireIfStale);
+  all.forEach(r => expireIfStale(roomKey, r));
   const sorted = all.sort((a, b) => b.created_at - a.created_at);
-  return MAX_HISTORY > 0 ? sorted.slice(0, MAX_HISTORY) : sorted;
+  if (MAX_HISTORY <= 0) return sorted;
+  // 履歴の上限は応答済みにだけ効かせる。クライアントは「一覧に無い = もう承認待ちでない」と
+  // 判断して通知を消すので、未応答は件数に関係なく必ず返す。
+  const pending = sorted.filter(r => !r.response);
+  const history = sorted.filter(r => r.response).slice(0, Math.max(0, MAX_HISTORY - pending.length));
+  return sorted.filter(r => !r.response || history.includes(r));
 }
 
 // 古いリクエストを定期的にクリーンアップ（REQUEST_CLEANUP 超過分）
 // MAX_HISTORY 超過分も削除（メモリ管理）
 // 空ルーム（リクエスト 0・デバイス 0）かつ lastActivityAt が ROOM_CLEANUP 以上前のルームを自動削除
-export function cleanup(): void {
+/** 戻り値: 前回の cleanup 以降に expired へ遷移したリクエスト (呼び出し側が端末へ知らせる) */
+export function cleanup(): { roomKey: string; id: string }[] {
   const requestCutoff = Date.now() - REQUEST_CLEANUP_MS;
   const roomCutoff = Date.now() - ROOM_CLEANUP_MS;
 
   for (const [roomKey, room] of rooms) {
-    // リクエストのクリーンアップ（時間ベース）
+    // 未応答は消さない (期限を過ぎたものは expired にしてから履歴として扱う)。クライアントは
+    // 「一覧に無い = 解決済み」と判断して通知を消すので、黙って消えると承認待ちが宙に浮く。
+    room.requests.forEach(r => expireIfStale(roomKey, r));
+
+    // 応答済みのクリーンアップ（時間ベース）
     for (const [id, req] of room.requests) {
-      if (req.created_at < requestCutoff) {
+      if (req.response && req.created_at < requestCutoff) {
         room.requests.delete(id);
       }
     }
 
-    // MAX_HISTORY 超過分を削除（件数ベース）
-    if (MAX_HISTORY > 0 && room.requests.size > MAX_HISTORY) {
-      const sorted = Array.from(room.requests.entries())
+    // MAX_HISTORY 超過分を削除（件数ベース、応答済みのみ）
+    if (MAX_HISTORY > 0) {
+      const resolved = Array.from(room.requests.entries())
+        .filter(([, req]) => req.response)
         .sort((a, b) => b[1].created_at - a[1].created_at);
-      for (let i = MAX_HISTORY; i < sorted.length; i++) {
-        room.requests.delete(sorted[i][0]);
+      for (let i = MAX_HISTORY; i < resolved.length; i++) {
+        room.requests.delete(resolved[i][0]);
       }
     }
 
@@ -493,4 +518,5 @@ export function cleanup(): void {
       console.log(`[store] Empty room removed: ${roomKey.substring(0, 8)}...`);
     }
   }
+  return newlyExpired.splice(0, newlyExpired.length);
 }

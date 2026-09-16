@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import WatchKit
 
 // Watch アプリの動作状態。Mac から Watch のログを読めない環境があるため、
@@ -27,7 +28,7 @@ final class WatchStatus: ObservableObject {
 
     /// 履歴にだけ残す (lastEvent は変えない)
     func log(_ text: String, at date: Date = Date()) {
-        DispatchQueue.main.async {
+        Self.onMain {
             self.eventLog.insert("\(Self.stamp(date)) \(text)", at: 0)
             if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
         }
@@ -38,35 +39,89 @@ final class WatchStatus: ObservableObject {
 
     /// 一度知らせた request_id (新しい順)。同じ枠が消えて再表示されても再度は鳴らさない。
     private var alertedIds: [String] = []
-    private static let maxAlerted = 20
+    private static let maxAlerted = 200
+    /// 前面到着 (.play) だったが inactive に落ちた瞬間で鳴らせなかった ID。通知は .sound 無しで出ているので
+    /// 「配信済み = 鳴った」とは扱わず、次に前面へ戻ったとき必ず鳴らす。
+    private var foregroundMissed: Set<String> = []
 
-    /// alert: 新しい枠を出すとき、前面なら音と振動で知らせる。ポーリングで見つけた承認待ちは
-    /// 通知経路を通らないので、これが無いと画面を見ていない限り気付けない。
-    /// 通知タップで開いた場合は通知自体が鳴っているので false にする。
-    func setPending(_ request: WatchPendingRequest?, alert: Bool = true) {
+    /// 新しい枠を出したとき、利用者にどう知らせるか。
+    enum AlertPolicy {
+        /// 前面なら必ず鳴らす。前面で通知が到着した経路 (willPresent) 用。通知は .sound を返さないので
+        /// ここで鳴らさないと 0 回になる。配信済み一覧は見ない (今まさに届いた通知自身が載りうる)。
+        case play
+        /// 前面なら鳴らすが、同じ request_id の通知が既に配信済みなら鳴らさない (背景で通知として鳴った
+        /// 承認を、アイコンやウィジェットから開いた場合)。ポーリング・通知一覧フォールバック用。
+        case playUnlessDelivered
+        /// 鳴らさない。通知タップで開いた経路 (通知自体が鳴っている)。
+        case silent
+    }
+
+    /// ポーリングで見つけた承認待ちは通知経路を通らないので、鳴らさないと画面を見ていない限り気付けない。
+    /// request_id ごとに 1 回だけ鳴らす。
+    /// main から呼ばれたら同期で処理する。willPresent → setPending → play が同じ main ターンで完結しないと、
+    /// completion を返した後に inactive へ落ちて鳴らせないことがある (dismiss の順序保証も同じ理由)。
+    private static func onMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
+    }
+
+    func setPending(_ request: WatchPendingRequest?, alert: AlertPolicy = .playUnlessDelivered) {
         let now = Date()
-        DispatchQueue.main.async {
+        Self.onMain {
             let changed = self.pendingRequest?.id != request?.id
             self.pendingRequest = request
             self.counter += 1
-            guard changed else { return }
-            let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
-            self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
-            if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            if changed {
+                let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
+                self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
+                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            }
+            // 同じ ID でも、まだ知らせていなければ鳴らす (前面でない間に枠が出て、後で前面に戻った場合)。
             guard let id = request?.id, !self.alertedIds.contains(id) else { return }
-            self.alertedIds.insert(id, at: 0)
-            if self.alertedIds.count > Self.maxAlerted { self.alertedIds.removeLast() }
-            // play(_:) は前面 (active) のときしか効かない。背景では通知そのものが鳴る。
-            if alert, WKApplication.shared().applicationState == .active {
-                WKInterfaceDevice.current().play(.notification)
-                self.log("振動 \(id)")
+            switch alert {
+            case .silent:
+                self.markAlerted(id)
+            case .play:
+                if !self.playIfActive(id) { self.foregroundMissed.insert(id) }
+            case .playUnlessDelivered:
+                guard WKApplication.shared().applicationState == .active else { return }
+                if self.foregroundMissed.contains(id) {
+                    if self.playIfActive(id) { self.foregroundMissed.remove(id) }
+                    return
+                }
+                UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
+                    let alreadyAnnounced = delivered.contains { $0.request.content.userInfo["request_id"] as? String == id }
+                    DispatchQueue.main.async {
+                        guard !self.alertedIds.contains(id), self.pendingRequest?.id == id else { return }
+                        if alreadyAnnounced {
+                            self.markAlerted(id)
+                        } else {
+                            self.playIfActive(id)
+                        }
+                    }
+                }
             }
         }
     }
 
+    /// play(_:) は前面 (active) のときしか効かない。鳴らせなかった ID は記録せず、次に前面で
+    /// 枠を出す機会 (activation 後の取り直し等) に鳴らす。main で呼ぶ。
+    @discardableResult
+    private func playIfActive(_ id: String) -> Bool {
+        guard WKApplication.shared().applicationState == .active else { return false }
+        markAlerted(id)
+        WKInterfaceDevice.current().play(.notification)
+        log("振動 \(id)")
+        return true
+    }
+
+    private func markAlerted(_ id: String) {
+        alertedIds.insert(id, at: 0)
+        if alertedIds.count > Self.maxAlerted { alertedIds.removeLast() }
+    }
+
     func set(_ keyPath: ReferenceWritableKeyPath<WatchStatus, String>, _ value: String) {
         let now = Date()
-        DispatchQueue.main.async {
+        Self.onMain {
             self[keyPath: keyPath] = value
             self.counter += 1
             if keyPath == \.lastEvent {

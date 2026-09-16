@@ -16,6 +16,19 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         set { UserDefaults.standard.set(newValue, forKey: "deviceToken") }
     }
 
+    /// トークンの順序を iPhone に伝えるための番号。壁時計は巻き戻るので使わない。
+    /// epoch はインストールごとに 1 つ (再インストールで変わる)、seq はトークンが変わるたびに増える。
+    private var tokenEpoch: String {
+        if let e = UserDefaults.standard.string(forKey: "tokenEpoch") { return e }
+        let e = UUID().uuidString
+        UserDefaults.standard.set(e, forKey: "tokenEpoch")
+        return e
+    }
+    private var tokenSeq: Int {
+        get { UserDefaults.standard.integer(forKey: "tokenSeq") }
+        set { UserDefaults.standard.set(newValue, forKey: "tokenSeq") }
+    }
+
     func applicationDidFinishLaunching() {
         UNUserNotificationCenter.current().delegate = self
         // サーバは category=PERMISSION_REQUEST を付けて送るが、Watch 側ではその
@@ -38,6 +51,8 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     /// 前面に来たとき、承認待ちを取得して応答画面に載せ、前面の間は定期的に取り直す。
     /// 通知を見逃したり消したりしてからウィジェット等でアプリを開いた場合の入口。
     func applicationDidBecomeActive() {
+        // 前面でない間に出た枠 (鳴らせていない) を、前面に戻った時点で知らせる
+        if let current = WatchStatus.shared.pendingRequest { WatchStatus.shared.setPending(current) }
         refreshPending()
         startPolling()
     }
@@ -79,21 +94,34 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         if refreshInFlight { return }
         refreshInFlight = true
         if !quiet { WatchStatus.shared.set(\.lastEvent, "承認待ちを iPhone に問い合わせ") }
+        // 問い合わせ前に届いていた通知だけを掃除の対象にする。一覧の取得中に届いた新しい承認は
+        // 一覧に載っていなくても未解決なので消してはいけない。
+        UNUserNotificationCenter.current().getDeliveredNotifications { before in
+            let snapshot = Set(before.map(\.request.identifier))
+            self.sendPendingQuery(session: session, quiet: quiet, deliveredBefore: snapshot)
+        }
+    }
+
+    private func sendPendingQuery(session: WCSession, quiet: Bool, deliveredBefore snapshot: Set<String>) {
+        // WCSession の返信は任意のキューで来る。状態 (refreshInFlight / dismissedIds / 表示) は main でだけ触る。
         session.sendMessage(["request": "pending"], replyHandler: { reply in
-            self.refreshInFlight = false
-            guard reply["ok"] as? Bool == true, let list = reply["requests"] as? [[String: Any]] else {
-                if !quiet { WatchStatus.shared.set(\.lastEvent, "問い合わせ失敗 (iPhone がサーバへ届かず)") }
-                self.refreshPendingFromDeliveredNotifications()
-                return
-            }
-            let pending = list
-                .sorted { ($0["created_at"] as? Double ?? 0) > ($1["created_at"] as? Double ?? 0) }
-                .compactMap { WatchPendingRequest(listItem: $0) }
-            let newest = pending.first
-            // サーバが承認待ちと言っていない通知は応答済み・期限切れ・キャンセル済み。
-            // 残すと iPhone 不達時のフォールバックが古い承認を再表示する。
-            Self.removeDeliveredNotifications(exceptRequestIds: Set(pending.map(\.id)))
             DispatchQueue.main.async {
+                self.refreshInFlight = false
+                guard reply["ok"] as? Bool == true, let list = reply["requests"] as? [[String: Any]] else {
+                    if !quiet { WatchStatus.shared.set(\.lastEvent, "問い合わせ失敗 (iPhone がサーバへ届かず)") }
+                    self.refreshPendingFromDeliveredNotifications()
+                    return
+                }
+                // サーバが承認待ちと言っていない通知は応答済み・期限切れ・キャンセル済み。
+                // 残すと iPhone 不達時のフォールバックが古い承認を再表示する。
+                // 残す集合は生の request_id 全件から作る (Watch で表示できない形の承認待ちも通知は残す)。
+                let listedIds = Set(list.compactMap { $0["request_id"] as? String })
+                Self.removeDeliveredNotifications(among: snapshot, exceptRequestIds: listedIds)
+                let pending = list
+                    .sorted { ($0["created_at"] as? Double ?? 0) > ($1["created_at"] as? Double ?? 0) }
+                    .compactMap { WatchPendingRequest(listItem: $0) }
+                    .filter { !self.dismissedIds.contains($0.id) }
+                let newest = pending.first
                 let current = WatchStatus.shared.pendingRequest?.id
                 if let newest {
                     if current != newest.id {
@@ -109,22 +137,25 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 }
             }
         }, errorHandler: { error in
-            self.refreshInFlight = false
-            if !quiet { WatchStatus.shared.set(\.lastEvent, "問い合わせ不達 (\(error.localizedDescription))") }
-            self.refreshPendingFromDeliveredNotifications()
+            DispatchQueue.main.async {
+                self.refreshInFlight = false
+                if !quiet { WatchStatus.shared.set(\.lastEvent, "問い合わせ不達 (\(error.localizedDescription))") }
+                self.refreshPendingFromDeliveredNotifications()
+            }
         })
     }
 
     func refreshPendingFromDeliveredNotifications() {
         UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
-            let newest = notifications
+            let candidates = notifications
                 .sorted { $0.date > $1.date }
                 .compactMap { Self.pendingRequest(from: $0) }
-                .first
-            guard let newest else { return }
-            if WatchStatus.shared.pendingRequest?.id != newest.id {
-                WatchStatus.shared.setPending(newest)
-                WatchStatus.shared.set(\.lastEvent, "届いていた通知から承認待ちを表示")
+            DispatchQueue.main.async {
+                guard let newest = candidates.first(where: { !self.dismissedIds.contains($0.id) }) else { return }
+                if WatchStatus.shared.pendingRequest?.id != newest.id {
+                    WatchStatus.shared.setPending(newest)
+                    WatchStatus.shared.set(\.lastEvent, "届いていた通知から承認待ちを表示")
+                }
             }
         }
     }
@@ -132,8 +163,10 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     // MARK: - APNs トークン → iPhone
 
     func didRegisterForRemoteNotifications(withDeviceToken deviceToken: Data) {
-        deviceTokenHex = deviceToken.map { String(format: "%02x", $0) }.joined()
-        print("[PromptRelayWatch] device token: \(deviceTokenHex.prefix(16))...")
+        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        if hex != deviceTokenHex { tokenSeq += 1 }
+        deviceTokenHex = hex
+        print("[PromptRelayWatch] device token: \(deviceTokenHex.prefix(16))... seq=\(tokenSeq)")
         WatchStatus.shared.set(\.tokenState, "取得済 \(deviceTokenHex.prefix(8))…")
         sendTokenToPhone()
     }
@@ -153,7 +186,12 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
             WatchStatus.shared.set(\.phoneState, "WC 未活性")
             return
         }
-        let payload: [String: Any] = ["watchToken": deviceTokenHex, "at": Date().timeIntervalSince1970]
+        let payload: [String: Any] = [
+            "watchToken": deviceTokenHex,
+            "epoch": tokenEpoch,
+            "seq": tokenSeq,
+            "at": Date().timeIntervalSince1970,
+        ]
         // applicationContext: 最新値を保持し iPhone アプリ起動時に読める。transferUserInfo: キュー配送で確実に届く。
         try? session.updateApplicationContext(payload)
         session.transferUserInfo(payload)
@@ -190,12 +228,27 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
             return
         }
         WatchStatus.shared.log("dismiss \(requestId)")
+        // 状態更新を先に main で済ませてから通知を消し、その完了で fetch completion を返す。
+        // 逆順だと completion 後にプロセスが止まり、main 側の更新が走らないことがある。
         DispatchQueue.main.async {
+            self.markDismissed(requestId)
             if WatchStatus.shared.pendingRequest?.id == requestId { WatchStatus.shared.setPending(nil) }
+            Self.removeDeliveredNotifications(requestId: requestId) { removed in
+                completionHandler(removed ? .newData : .noData)
+            }
         }
-        Self.removeDeliveredNotifications(requestId: requestId) { removed in
-            completionHandler(removed ? .newData : .noData)
-        }
+    }
+
+    /// dismiss を受けた request_id (新しい順)。dismiss より前に出した一覧要求の返信が後から届いても、
+    /// その ID で枠を復活させない。サーバが応答済みを承認待ちとして返すことは無いので、除外して安全。
+    /// プロセス再起動をまたいで遅着する承認本体も抑止できるよう永続化する。
+    private lazy var dismissedIds: [String] = UserDefaults.standard.stringArray(forKey: "dismissedRequestIds") ?? []
+    private static let maxDismissed = 200
+
+    private func markDismissed(_ id: String) {
+        dismissedIds.insert(id, at: 0)
+        if dismissedIds.count > Self.maxDismissed { dismissedIds.removeLast() }
+        UserDefaults.standard.set(dismissedIds, forKey: "dismissedRequestIds")
     }
 
     // iPhone からの登録結果 (状態表示用)
@@ -213,31 +266,50 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         Self.logDelivery(notification, via: "前面")
-        if let pending = Self.pendingRequest(from: notification) {
+        guard let pending = Self.pendingRequest(from: notification) else {
+            completionHandler([.banner, .sound])   // 完了通知など、承認待ち以外
+            return
+        }
+        DispatchQueue.main.async {
+            if self.dismissedIds.contains(pending.id) {
+                // dismiss が先に届いた承認の本体が遅れて来た。解決済みなので出さない。
+                completionHandler([])
+                return
+            }
             // 音と振動は setPending 側のハプティクスで出す (ポーリング経由と同じ経路に揃える)。
-            // ここで .sound も返すと二重に鳴る。
-            WatchStatus.shared.setPending(pending)
+            // ここで .sound も返すと二重に鳴る。.play: この通知自身が配信済み一覧に載る前後の競合を避ける。
+            WatchStatus.shared.setPending(pending, alert: .play)
             completionHandler([.banner])
-        } else {
-            completionHandler([.banner, .sound])
         }
     }
 
     /// この request_id の通知を Watch から消す (通知タップ経由・一覧経由のどちらでも)
     private static func removeDeliveredNotifications(requestId: String, completion: ((Bool) -> Void)? = nil) {
-        removeDeliveredNotifications { $0 == requestId }
+        removeDeliveredNotifications(where: { $0 == requestId }, completion: completion)
     }
 
-    /// 承認待ちでなくなった通知をまとめて消す (サーバの一覧を正とする)
-    private static func removeDeliveredNotifications(exceptRequestIds keep: Set<String>) {
-        removeDeliveredNotifications { !keep.contains($0) }
+    /// 承認待ちでなくなった通知をまとめて消す (サーバの一覧を正とする)。対象は一覧を要求した時点で
+    /// 届いていた通知 (among) に限る。一覧が空でも消す: サーバ再起動後などに残る通知は、応答しても 404 にしかならない。
+    private static func removeDeliveredNotifications(among identifiers: Set<String>, exceptRequestIds keep: Set<String>) {
+        removeDeliveredNotifications(where: { identifier, requestId in
+            identifiers.contains(identifier) && !keep.contains(requestId)
+        })
     }
 
     private static func removeDeliveredNotifications(where shouldRemove: @escaping (String) -> Bool, completion: ((Bool) -> Void)? = nil) {
+        removeDeliveredNotifications(where: { _, requestId in shouldRemove(requestId) }, completion: completion)
+    }
+
+    /// shouldRemove(通知の identifier, request_id)
+    private static func removeDeliveredNotifications(where shouldRemove: @escaping (String, String) -> Bool, completion: ((Bool) -> Void)? = nil) {
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { notifications in
             let ids = notifications
-                .filter { n in (n.request.content.userInfo["request_id"] as? String).map(shouldRemove) ?? false }
+                .filter { n in
+                    let info = n.request.content.userInfo
+                    guard info["type"] as? String == "permission_request", let id = info["request_id"] as? String else { return false }
+                    return shouldRemove(n.request.identifier, id)
+                }
                 .map { $0.request.identifier }
             if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
             completion?(!ids.isEmpty)
@@ -291,7 +363,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
            let pending = Self.pendingRequest(from: response.notification) {
             Self.logDelivery(response.notification, via: "タップ")
-            WatchStatus.shared.setPending(pending, alert: false)
+            WatchStatus.shared.setPending(pending, alert: .silent)
             WatchStatus.shared.set(\.lastEvent, "通知を開いた")
         }
         completionHandler()

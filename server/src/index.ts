@@ -411,6 +411,11 @@ app.post('/permission-request/:id/respond', (req, res) => {
     res.status(404).json({ error: 'not found' });
     return;
   }
+  if (request.response) {
+    console.log(`[respond] ${req.params.id}: already responded [source=${source || 'unknown'}]`);
+    res.status(404).json({ error: 'already responded' });
+    return;
+  }
 
   let sendKey: string;
   let actualResponse: 'allow' | 'deny';
@@ -418,19 +423,29 @@ app.post('/permission-request/:id/respond', (req, res) => {
   if (typeof choice === 'number') {
     // 選択肢番号ベース（動的ボタンから）。存在しない番号 (クライアントの固定ボタンと
     // 実際の選択肢がずれた場合等) をターミナルへ送らない
-    if (request.choices.length > 0 && !request.choices.some(c => c.number === choice)) {
+    if (request.choices.length === 0) {
+      // choices 無しのレガシー要求: クライアントの固定ボタン (1=Yes, 2=Yes(skip), 3=No) だけ受ける
+      if (choice !== 1 && choice !== 2 && choice !== 3) {
+        console.log(`[respond] ${req.params.id}: unknown choice ${choice} for legacy request [source=${source || 'unknown'}]`);
+        res.status(400).json({ error: 'unknown choice' });
+        return;
+      }
+      actualResponse = choice === 3 ? 'deny' : 'allow';
+      sendKey = String(choice);   // 2 (以降スキップ) を 1 に潰さない
+    } else if (!request.choices.some(c => c.number === choice)) {
       console.log(`[respond] ${req.params.id}: unknown choice ${choice} [source=${source || 'unknown'}]`);
       res.status(400).json({ error: 'unknown choice' });
       return;
-    }
-    sendKey = String(choice);
-    // Question（AskUserQuestion）は全選択肢が等価な回答なので常に allow
-    // 権限プロンプトは最後の選択肢 = deny（No）、それ以外 = allow
-    if (request.tool_name === 'Question') {
-      actualResponse = 'allow';
     } else {
-      const isLast = request.choices.length > 0 && choice === request.choices[request.choices.length - 1].number;
-      actualResponse = isLast ? 'deny' : 'allow';
+      sendKey = String(choice);
+      // Question（AskUserQuestion）は全選択肢が等価な回答なので常に allow
+      // 権限プロンプトは最後の選択肢 = deny（No）、それ以外 = allow
+      if (request.tool_name === 'Question') {
+        actualResponse = 'allow';
+      } else {
+        const isLast = choice === request.choices[request.choices.length - 1].number;
+        actualResponse = isLast ? 'deny' : 'allow';
+      }
     }
   } else if (response === 'allow' || response === 'deny' || response === 'allow_all') {
     // レガシー応答（RequestsView 等から）
@@ -527,8 +542,14 @@ app.post('/notify', async (req, res) => {
   trySendWebPushAll(roomKey, { title: notifTitle, body: notifBody, tag: collapseId });
 });
 
-// 定期クリーンアップ
-setInterval(cleanup, 60 * 1000);
+// 定期クリーンアップ。期限切れになった承認は WebSocket と dismiss で端末へ知らせる
+// (知らせないと iPhone の画面に「残り 0 秒」の承認待ちが残り、Watch の通知も消えない)。
+setInterval(() => {
+  const expired = cleanup();
+  const rooms = new Set(expired.map(e => e.roomKey));
+  for (const roomKey of rooms) broadcast(roomKey);
+  for (const { roomKey, id } of expired) trySendApnsSilent(roomKey, { type: 'dismiss', request_id: id });
+}, 60 * 1000);
 
 // HTTP サーバ起動
 // 保存済みの端末登録を読み戻す (DEVICE_STORE_PATH 指定時のみ)。再デプロイ後の再登録を不要にする。
