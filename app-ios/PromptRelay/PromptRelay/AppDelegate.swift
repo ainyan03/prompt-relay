@@ -97,6 +97,11 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         let token = WatchBridge.shared.watchDeviceToken
         guard connectionEnabled, isApiKeyValid, !token.isEmpty,
               let url = URL(string: "\(serverURL)/register") else { return }
+        // iPhone トークンと同じ世代ガード。登録中に接続 OFF・URL/キー変更・Watch トークン変更が
+        // 起きると、先に出た解除より後に登録が完了してサーバに古い宛先が残る。
+        let generation = registrationGeneration
+        let registrationServerURL = serverURL
+        let registrationApiKey = apiKey
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -111,7 +116,16 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             let result = error.map { "エラー: \($0.localizedDescription)" } ?? (code == 200 ? "登録済 (200)" : "HTTP \(code)")
             print("[PromptRelay] Watch token register → \(result)")
-            WatchBridge.shared.notifyWatch(registerResult: result)
+            DispatchQueue.main.async {
+                let stale = self.registrationGeneration != generation
+                    || !self.connectionEnabled
+                    || WatchBridge.shared.watchDeviceToken != token
+                if stale, code == 200 {
+                    self.unregisterWatchToken(token, serverURL: registrationServerURL, apiKey: registrationApiKey)
+                    return
+                }
+                WatchBridge.shared.notifyWatch(registerResult: result)
+            }
         }.resume()
     }
 

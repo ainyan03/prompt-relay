@@ -6,8 +6,18 @@ class NotificationService: UNNotificationServiceExtension {
 
     override func didReceive(
         _ request: UNNotificationRequest,
-        withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
+        withContentHandler handler: @escaping (UNNotificationContent) -> Void
     ) {
+        // カテゴリ登録の完了と serviceExtensionTimeWillExpire が競合しても 1 回しか返さない
+        let lock = NSLock()
+        var delivered = false
+        let contentHandler: (UNNotificationContent) -> Void = { content in
+            lock.lock()
+            let first = !delivered
+            delivered = true
+            lock.unlock()
+            if first { handler(content) }
+        }
         self.contentHandler = contentHandler
         bestAttemptContent = request.content.mutableCopy() as? UNMutableNotificationContent
 
@@ -108,11 +118,10 @@ class NotificationService: UNNotificationServiceExtension {
                     // 今回の通知自体は残す
                     if let currentId = currentRequestId,
                        info["request_id"] as? String == currentId { return false }
-                    // tmux_target が指定されている場合、同一ペインの通知のみ対象
-                    if let target = tmuxTarget {
-                        return info["tmux_target"] as? String == target
-                    }
-                    return true
+                    // 同一ペインの通知のみ対象 (サーバも同一 tmux_target の旧リクエストしか
+                    // キャンセルしない)。tmux_target が無い通知は独立した承認なので他を消さない。
+                    guard let target = tmuxTarget else { return false }
+                    return info["tmux_target"] as? String == target
                 }
                 .map { $0.request.identifier }
 

@@ -44,6 +44,9 @@ private struct WebSocketUpdate: Decodable {
 class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var requests: [PermissionRequestItem] = []
     @Published var isLoading = false
+    /// 応答送信中のリクエスト。完了まで同じリクエストのボタンを止め、Allow の直後に Deny が
+    /// 並行して飛ぶのを防ぐ (到着順で先の回答が採用され、画面からはどちらか分からない)。
+    @Published var respondingIds: Set<String> = []
 
     private var webSocketSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
@@ -304,6 +307,8 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
     }
 
     private func postJSON(url: URL, body: [String: Any], requestId: String) {
+        guard !respondingIds.contains(requestId) else { return }
+        respondingIds.insert(requestId)
         var request = makeRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -323,10 +328,12 @@ class RequestsViewModel: NSObject, ObservableObject, URLSessionWebSocketDelegate
             }
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.respondingIds.remove(requestId)
                 if succeeded {
                     self.removeDeliveredNotification(requestId: requestId)
                 }
-                if !self.isWebSocketConnected {
+                // 失敗時も取り直す (WebSocket が生きているように見えて更新が来ない場合の保険)
+                if !succeeded || !self.isWebSocketConnected {
                     self.fetch()
                 }
             }
@@ -397,7 +404,7 @@ struct RequestsView: View {
                                     .padding(.bottom, 4)
 
                                 ForEach(pending) { item in
-                                    RequestRow(item: item, viewModel: viewModel, isLocked: buttonsLocked)
+                                    RequestRow(item: item, viewModel: viewModel, isLocked: buttonsLocked || viewModel.respondingIds.contains(item.id))
                                         .padding(.horizontal)
                                         .padding(.vertical, 4)
                                         .transition(.asymmetric(
@@ -439,7 +446,7 @@ struct RequestsView: View {
                                 .padding(.bottom, 4)
 
                             ForEach(pending) { item in
-                                RequestRow(item: item, viewModel: viewModel, isLocked: buttonsLocked)
+                                RequestRow(item: item, viewModel: viewModel, isLocked: buttonsLocked || viewModel.respondingIds.contains(item.id))
                                     .padding(.horizontal)
                                     .padding(.vertical, 4)
                                     .transition(.asymmetric(
