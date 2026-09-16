@@ -1,4 +1,5 @@
 import Foundation
+import WatchKit
 
 // Watch アプリの動作状態。Mac から Watch のログを読めない環境があるため、
 // 登録の進み具合と失敗理由を画面に出して切り分けられるようにする。
@@ -35,16 +36,30 @@ final class WatchStatus: ObservableObject {
     @Published var pendingRequest: WatchPendingRequest? = nil
     @Published var sending = false
 
-    func setPending(_ request: WatchPendingRequest?) {
+    /// 一度知らせた request_id (新しい順)。同じ枠が消えて再表示されても再度は鳴らさない。
+    private var alertedIds: [String] = []
+    private static let maxAlerted = 20
+
+    /// alert: 新しい枠を出すとき、前面なら音と振動で知らせる。ポーリングで見つけた承認待ちは
+    /// 通知経路を通らないので、これが無いと画面を見ていない限り気付けない。
+    /// 通知タップで開いた場合は通知自体が鳴っているので false にする。
+    func setPending(_ request: WatchPendingRequest?, alert: Bool = true) {
         let now = Date()
         DispatchQueue.main.async {
             let changed = self.pendingRequest?.id != request?.id
             self.pendingRequest = request
             self.counter += 1
-            if changed {
-                let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
-                self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
-                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            guard changed else { return }
+            let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
+            self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
+            if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            guard let id = request?.id, !self.alertedIds.contains(id) else { return }
+            self.alertedIds.insert(id, at: 0)
+            if self.alertedIds.count > Self.maxAlerted { self.alertedIds.removeLast() }
+            // play(_:) は前面 (active) のときしか効かない。背景では通知そのものが鳴る。
+            if alert, WKApplication.shared().applicationState == .active {
+                WKInterfaceDevice.current().play(.notification)
+                self.log("振動 \(id)")
             }
         }
     }

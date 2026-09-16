@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 
 // Watch 用コンパニオンアプリ (実験用の最小構成)。
 // 目的は通知音ファイルを Watch 側の bundle に同梱すること。
@@ -18,7 +19,9 @@ struct PromptRelayWatchApp: App {
 struct WatchContentView: View {
     @ObservedObject private var status = WatchStatus.shared
     @State private var showDetails = false
-    @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate
+    /// adaptor は App 側の 1 つだけ (View で再宣言すると別インスタンスが作られ、
+    /// ポーリングや WCSession の状態が delegate 本体と分かれる)。
+    private var appDelegate: WatchAppDelegate? { WKApplication.shared().delegate as? WatchAppDelegate }
 
     var body: some View {
         ScrollView {
@@ -60,11 +63,11 @@ struct WatchContentView: View {
                             Text(line).font(.system(size: 10, design: .monospaced))
                         }
                         Button("承認待ちを更新") {
-                            appDelegate.refreshPending()
+                            appDelegate?.refreshPending()
                         }
                         .font(.caption)
                         Button("iPhone へ再送") {
-                            appDelegate.sendTokenToPhone()
+                            appDelegate?.sendTokenToPhone()
                         }
                         .font(.caption)
                     }
@@ -86,7 +89,7 @@ struct WatchContentView: View {
                 .lineLimit(4)
             ForEach(request.choices) { choice in
                 Button {
-                    appDelegate.respond(to: request, choice: choice.number)
+                    appDelegate?.respond(to: request, choice: choice.number)
                 } label: {
                     Text(choice.text)
                         .font(.caption)

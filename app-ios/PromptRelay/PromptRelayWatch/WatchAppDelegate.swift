@@ -23,6 +23,8 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         UNUserNotificationCenter.current().setNotificationCategories([])
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             print("[PromptRelayWatch] notification auth granted=\(granted) error=\(String(describing: error))")
+            // 権限が無くてもトークン登録は通るので、状態画面で区別できるようにしておく
+            if !granted { WatchStatus.shared.set(\.lastEvent, "通知権限なし (Watch の設定で許可が要る)") }
             DispatchQueue.main.async {
                 WKApplication.shared().registerForRemoteNotifications()
             }
@@ -84,10 +86,13 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 self.refreshPendingFromDeliveredNotifications()
                 return
             }
-            let newest = list
+            let pending = list
                 .sorted { ($0["created_at"] as? Double ?? 0) > ($1["created_at"] as? Double ?? 0) }
                 .compactMap { WatchPendingRequest(listItem: $0) }
-                .first
+            let newest = pending.first
+            // サーバが承認待ちと言っていない通知は応答済み・期限切れ・キャンセル済み。
+            // 残すと iPhone 不達時のフォールバックが古い承認を再表示する。
+            Self.removeDeliveredNotifications(exceptRequestIds: Set(pending.map(\.id)))
             DispatchQueue.main.async {
                 let current = WatchStatus.shared.pendingRequest?.id
                 if let newest {
@@ -166,6 +171,30 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
             WatchStatus.shared.set(\.lastEvent, "WC activated")
             applyPhoneContext(session.receivedApplicationContext)
             sendTokenToPhone()
+            // 起動直後の applicationDidBecomeActive は activation 前で iPhone に問い合わせられない。
+            // 活性化した時点で前面なら取り直す (次のポーリングまで待たせない)。
+            DispatchQueue.main.async {
+                if WKApplication.shared().applicationState == .active { self.refreshPending(quiet: true) }
+            }
+        }
+    }
+
+    // MARK: - サーバからの dismiss (サイレントプッシュ)
+
+    /// 別端末で応答済み・キャンセル・期限切れになったリクエストの通知と枠を消す。
+    /// Info.plist の WKBackgroundModes (remote-notification) が要る。背景プッシュは遅延・破棄されうるので、
+    /// 前面での取り直し (refreshPending) と二重に効かせる。
+    func didReceiveRemoteNotification(_ userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void) {
+        guard userInfo["type"] as? String == "dismiss", let requestId = userInfo["request_id"] as? String else {
+            completionHandler(.noData)
+            return
+        }
+        WatchStatus.shared.log("dismiss \(requestId)")
+        DispatchQueue.main.async {
+            if WatchStatus.shared.pendingRequest?.id == requestId { WatchStatus.shared.setPending(nil) }
+        }
+        Self.removeDeliveredNotifications(requestId: requestId) { removed in
+            completionHandler(removed ? .newData : .noData)
         }
     }
 
@@ -185,19 +214,33 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         Self.logDelivery(notification, via: "前面")
         if let pending = Self.pendingRequest(from: notification) {
+            // 音と振動は setPending 側のハプティクスで出す (ポーリング経由と同じ経路に揃える)。
+            // ここで .sound も返すと二重に鳴る。
             WatchStatus.shared.setPending(pending)
+            completionHandler([.banner])
+        } else {
+            completionHandler([.banner, .sound])
         }
-        completionHandler([.banner, .sound])
     }
 
     /// この request_id の通知を Watch から消す (通知タップ経由・一覧経由のどちらでも)
-    private static func removeDeliveredNotifications(requestId: String) {
+    private static func removeDeliveredNotifications(requestId: String, completion: ((Bool) -> Void)? = nil) {
+        removeDeliveredNotifications { $0 == requestId }
+    }
+
+    /// 承認待ちでなくなった通知をまとめて消す (サーバの一覧を正とする)
+    private static func removeDeliveredNotifications(exceptRequestIds keep: Set<String>) {
+        removeDeliveredNotifications { !keep.contains($0) }
+    }
+
+    private static func removeDeliveredNotifications(where shouldRemove: @escaping (String) -> Bool, completion: ((Bool) -> Void)? = nil) {
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { notifications in
             let ids = notifications
-                .filter { $0.request.content.userInfo["request_id"] as? String == requestId }
+                .filter { n in (n.request.content.userInfo["request_id"] as? String).map(shouldRemove) ?? false }
                 .map { $0.request.identifier }
             if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+            completion?(!ids.isEmpty)
         }
     }
 
@@ -235,22 +278,20 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 self.refreshPending()
             }
         }, errorHandler: { error in
-            // iPhone に即時到達できない (圏外等) → キュー送信 (iPhone アプリの前面復帰時に届く)
+            // iPhone に即時到達できない (圏外等) → キュー送信 (iPhone アプリの前面復帰時に届く)。
+            // サーバ受理を確認していないので枠は残す。届いて解決すれば次の取り直しで消える。
             session.transferUserInfo(message)
             WatchStatus.shared.set(\.lastEvent, "応答 choice=\(choice) → iPhone 不達、後で送信 (\(error.localizedDescription))")
-            DispatchQueue.main.async {
-                WatchStatus.shared.sending = false
-                WatchStatus.shared.pendingRequest = nil
-            }
+            DispatchQueue.main.async { WatchStatus.shared.sending = false }
         })
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        // 通知本文のタップ: アプリが前面に開くので、そこで応答する
+        // 通知本文のタップ: アプリが前面に開くので、そこで応答する (通知が既に鳴っているので振動させない)
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
            let pending = Self.pendingRequest(from: response.notification) {
             Self.logDelivery(response.notification, via: "タップ")
-            WatchStatus.shared.setPending(pending)
+            WatchStatus.shared.setPending(pending, alert: false)
             WatchStatus.shared.set(\.lastEvent, "通知を開いた")
         }
         completionHandler()
