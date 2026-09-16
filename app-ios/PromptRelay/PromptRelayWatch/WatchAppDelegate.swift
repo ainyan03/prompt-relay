@@ -60,6 +60,7 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     /// 前面に来たとき、承認待ちを取得して応答画面に載せ、前面の間は定期的に取り直す。
     /// 通知を見逃したり消したりしてからウィジェット等でアプリを開いた場合の入口。
     func applicationDidBecomeActive() {
+        logDeliveredNotifications()
         // 前面でない間に出た枠 (鳴らせていない) を、前面に戻った時点で知らせる
         if let current = WatchStatus.shared.pendingRequest { WatchStatus.shared.setPending(current) }
         // 前面復帰の直後は iPhone が「不達」になりやすい (実測: 直後は失敗、4 秒後の次回は成功)。
@@ -161,6 +162,16 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 self.refreshPendingFromDeliveredNotifications()
             }
         })
+    }
+
+    /// 背景で届いた通知の到着時刻を履歴に残す (配信のずれを測るため。watchOS が記録した date を使う)
+    private func logDeliveredNotifications() {
+        UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+            for n in notifications.sorted(by: { $0.date < $1.date }) {
+                guard let id = n.request.content.userInfo["request_id"] as? String else { continue }
+                WatchStatus.shared.log("配信済 \(id)", at: n.date)
+            }
+        }
     }
 
     func refreshPendingFromDeliveredNotifications() {

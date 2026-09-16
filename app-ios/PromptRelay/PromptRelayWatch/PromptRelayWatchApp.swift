@@ -1,10 +1,11 @@
 import SwiftUI
 import WatchKit
 
-// Watch 用コンパニオンアプリ (実験用の最小構成)。
-// 目的は通知音ファイルを Watch 側の bundle に同梱すること。
-// iPhone アプリの通知はミラー表示され、watchOS はペイロードの sound に
-// 同名ファイルが Watch アプリ bundle にあればそれを鳴らす、という仕様を検証する。
+// Watch 用コンパニオンアプリ。
+// 通知はサーバから Watch アプリ宛てに直接届き (iPhone のミラーではない)、同梱した通知音で鳴る。
+// 承認はこの画面のボタン (またはダブルタップ) で行い、iPhone アプリがサーバへ中継する。
+// 前面に承認待ちが出たときは、iPhone の設定で選んだ音と振動でアプリ側から知らせる
+// (watchOS は前面提示の通知音を鳴らさない)。「詳細」は Watch のログを Mac から読めない環境向けの状態表示。
 @main
 struct PromptRelayWatchApp: App {
     @WKApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate

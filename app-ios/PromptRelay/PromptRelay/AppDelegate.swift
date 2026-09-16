@@ -476,8 +476,18 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
     // MARK: - フォアグラウンド通知表示
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // 到着時刻を残す (Watch 側の履歴と突き合わせて配信のずれを測るため)
+        let id = (notification.request.content.userInfo["request_id"] as? String) ?? "?"
+        print("[PromptRelay] notification arrived \(id) at \(Self.timeStamp(notification.date)) (seen \(Self.timeStamp(Date())))")
         completionHandler([.banner, .sound])
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.S"
+        return f
+    }()
+    private static func timeStamp(_ d: Date) -> String { timeFormatter.string(from: d) }
 
     // MARK: - 通知アクション応答処理
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
@@ -678,6 +688,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         center.getDeliveredNotifications { notifications in
             let permissionNotifications = notifications.filter {
                 $0.request.content.userInfo["request_id"] is String
+            }
+            // 背景で届いた通知の到着時刻 (iOS が記録した date)。Watch 側の履歴と突き合わせて配信のずれを測る
+            for n in permissionNotifications.sorted(by: { $0.date < $1.date }) {
+                print("[PromptRelay] delivered \(n.request.content.userInfo["request_id"] as? String ?? "?") at \(Self.timeStamp(n.date))")
             }
             guard !permissionNotifications.isEmpty,
                   let url = URL(string: "\(self.serverURL)/permission-requests") else { return }
