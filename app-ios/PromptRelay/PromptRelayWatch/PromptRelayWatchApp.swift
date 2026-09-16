@@ -21,7 +21,11 @@ struct WatchContentView: View {
     @State private var showDetails = false
     /// adaptor は App 側の 1 つだけ (View で再宣言すると別インスタンスが作られ、
     /// ポーリングや WCSession の状態が delegate 本体と分かれる)。
-    private var appDelegate: WatchAppDelegate? { WKApplication.shared().delegate as? WatchAppDelegate }
+    private var appDelegate: WatchAppDelegate? {
+        let d = WatchAppDelegate.shared ?? (WKApplication.shared().delegate as? WatchAppDelegate)
+        if d == nil { WatchStatus.shared.log("delegate 未解決 (ボタン無効)") }
+        return d
+    }
 
     var body: some View {
         ScrollView {

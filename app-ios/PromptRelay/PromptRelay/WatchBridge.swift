@@ -150,9 +150,14 @@ final class WatchBridge: NSObject, WCSessionDelegate {
         }
     }
 
-    /// Watch への登録結果通知 (状態画面用、届かなくてもよい)
-    func notifyWatch(registerResult: String) {
+    /// Watch への登録結果通知 (状態画面用、届かなくてもよい)。
+    /// sounds: 設定画面の通知音 (通知種別 → ファイル名)。Watch が前面で鳴らすときに使う。
+    func notifyWatch(registerResult: String, sounds: [String: String]) {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
-        try? WCSession.default.updateApplicationContext(["registerResult": registerResult, "at": Date().timeIntervalSince1970])
+        try? WCSession.default.updateApplicationContext([
+            "registerResult": registerResult,
+            "sounds": sounds,
+            "at": Date().timeIntervalSince1970,
+        ])
     }
 }

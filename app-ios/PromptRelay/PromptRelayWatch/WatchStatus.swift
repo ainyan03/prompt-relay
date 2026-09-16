@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import UserNotifications
 import WatchKit
@@ -26,11 +27,17 @@ final class WatchStatus: ObservableObject {
         timeFormatter.string(from: date)
     }
 
+    /// 履歴に積み、標準出力にも流す (devicectl --console で Mac から読めるようにするため)。main で呼ぶ。
+    private func appendLog(_ line: String) {
+        eventLog.insert(line, at: 0)
+        if eventLog.count > Self.maxLog { eventLog.removeLast() }
+        print("[PromptRelayWatch] \(line)")
+    }
+
     /// 履歴にだけ残す (lastEvent は変えない)
     func log(_ text: String, at date: Date = Date()) {
         Self.onMain {
-            self.eventLog.insert("\(Self.stamp(date)) \(text)", at: 0)
-            if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+            self.appendLog("\(Self.stamp(date)) \(text)")
         }
     }
     /// 前面で応答待ちのリクエスト (通知タップで開いたもの)
@@ -72,8 +79,7 @@ final class WatchStatus: ObservableObject {
             self.counter += 1
             if changed {
                 let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
-                self.eventLog.insert("\(Self.stamp(now)) \(text)", at: 0)
-                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+                self.appendLog("\(Self.stamp(now)) \(text)")
             }
             // 同じ ID でも、まだ知らせていなければ鳴らす (前面でない間に枠が出て、後で前面に戻った場合)。
             guard let id = request?.id, !self.alertedIds.contains(id) else { return }
@@ -105,12 +111,31 @@ final class WatchStatus: ObservableObject {
 
     /// play(_:) は前面 (active) のときしか効かない。鳴らせなかった ID は記録せず、次に前面で
     /// 枠を出す機会 (activation 後の取り直し等) に鳴らす。main で呼ぶ。
+    /// 前面で鳴らす音のファイル名 (iPhone の設定画面の値。applicationContext で届く)。nil なら標準。
+    var foregroundSoundFile: String? {
+        get { UserDefaults.standard.string(forKey: "foregroundSoundFile") }
+        set { UserDefaults.standard.set(newValue, forKey: "foregroundSoundFile") }
+    }
+    private var player: AVAudioPlayer?
+
     @discardableResult
     private func playIfActive(_ id: String) -> Bool {
         guard WKApplication.shared().applicationState == .active else { return false }
         markAlerted(id)
-        WKInterfaceDevice.current().play(.notification)
-        log("振動 \(id)")
+        // 設定で選んだ音があれば同梱ファイルを再生し、振動は音の付かない .click にする。
+        // 無ければ標準の通知ハプティクス (音付き)。watchOS は前面提示の通知音を鳴らさないので自前で出す。
+        if let file = foregroundSoundFile, let url = Bundle.main.url(forResource: file, withExtension: nil),
+           let p = try? AVAudioPlayer(contentsOf: url) {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            player = p
+            p.play()
+            WKInterfaceDevice.current().play(.click)
+            log("振動+音 \(file) \(id)")
+        } else {
+            WKInterfaceDevice.current().play(.notification)
+            log("振動 \(id)")
+        }
         return true
     }
 
@@ -125,8 +150,7 @@ final class WatchStatus: ObservableObject {
             self[keyPath: keyPath] = value
             self.counter += 1
             if keyPath == \.lastEvent {
-                self.eventLog.insert("\(Self.stamp(now)) \(value)", at: 0)
-                if self.eventLog.count > Self.maxLog { self.eventLog.removeLast() }
+                self.appendLog("\(Self.stamp(now)) \(value)")
             }
         }
     }

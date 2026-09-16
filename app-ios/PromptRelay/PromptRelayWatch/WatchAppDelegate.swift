@@ -11,6 +11,15 @@ import WatchKit
 // sendMessage が使えず、キュー送信は iPhone アプリの前面復帰まで届かないため、
 // 「押したのに反映されない」体験になる。
 final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificationCenterDelegate, WCSessionDelegate {
+    /// adaptor が生成した唯一のインスタンス。View はこれを使う (WKApplication.shared().delegate は
+    /// SwiftUI の adaptor 経由だと実機で nil になり、ボタンが何もしなくなった)。
+    private(set) static weak var shared: WatchAppDelegate?
+
+    override init() {
+        super.init()
+        WatchAppDelegate.shared = self
+    }
+
     private var deviceTokenHex: String {
         get { UserDefaults.standard.string(forKey: "deviceToken") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "deviceToken") }
@@ -53,7 +62,16 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
     func applicationDidBecomeActive() {
         // 前面でない間に出た枠 (鳴らせていない) を、前面に戻った時点で知らせる
         if let current = WatchStatus.shared.pendingRequest { WatchStatus.shared.setPending(current) }
-        refreshPending()
+        // 前面復帰の直後は iPhone が「不達」になりやすい (実測: 直後は失敗、4 秒後の次回は成功)。
+        // 到達可能ならすぐ、そうでなければ 1 秒だけ待ってから問い合わせる。
+        if WCSession.isSupported(), WCSession.default.activationState == .activated, !WCSession.default.isReachable {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard WKApplication.shared().applicationState == .active else { return }
+                self?.refreshPending()
+            }
+        } else {
+            refreshPending()
+        }
         startPolling()
     }
 
@@ -260,6 +278,9 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
         if let result = context["registerResult"] as? String {
             WatchStatus.shared.set(\.registerState, result)
         }
+        // 前面で鳴らす音 (設定画面の承認リクエスト用の音)。標準なら nil。
+        let sounds = context["sounds"] as? [String: String]
+        WatchStatus.shared.foregroundSoundFile = sounds?["permission_request"]
     }
 
     // MARK: - 通知の表示と応答 (iPhone 経由)
@@ -276,8 +297,9 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 completionHandler([])
                 return
             }
-            // 音と振動は setPending 側のハプティクスで出す (ポーリング経由と同じ経路に揃える)。
-            // ここで .sound も返すと二重に鳴る。.play: この通知自身が配信済み一覧に載る前後の競合を避ける。
+            // 音と振動はアプリ側の play(.notification) で出す (標準の通知音になる)。
+            // 実機確認: 前面提示で .sound を返しても watchOS は音も振動も出さなかった。
+            // .play: この通知自身が配信済み一覧に載る前後の競合を避けるため、配信済み判定を通さない。
             WatchStatus.shared.setPending(pending, alert: .play)
             completionHandler([.banner])
         }

@@ -140,7 +140,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
                     }
                     return
                 }
-                WatchBridge.shared.notifyWatch(registerResult: result)
+                WatchBridge.shared.notifyWatch(registerResult: result, sounds: self.watchSoundDeclaration)
                 if self.watchRegistrationPending {
                     self.watchRegistrationPending = false
                     self.registerWatchTokenWithServer()
