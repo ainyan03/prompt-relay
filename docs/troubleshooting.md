@@ -134,6 +134,56 @@ VAPID_SUBJECT=mailto:you@example.com
 
 ---
 
+## Apple Watch の通知が遅い・鳴らない
+
+### 何が「遅い」のかを切り分ける
+
+配信（サーバ → 端末）と提示（端末が鳴らす判断）は別物です。実測では、iPhone をロックして
+Watch アプリを閉じた状態で、iPhone と Watch はサーバ送信から約 0.1 秒で**同時に**受信します。
+体感の遅れは提示側の規則によるものです。
+
+- 手首を下ろしている間、watchOS は届いた通知の提示を **5〜10 秒**保留します（Watch アプリの
+  開閉に関係なく、iPhone の画面が消えていても同じ。time-sensitive が有効でも変わりません）。
+  アプリやサーバでは短縮できません。
+- Watch を装着していると iPhone は鳴りません（Apple の振り分け）。逆に iPhone のロックを
+  解除して使っている間は、Watch 側の提示が抑えられることがあります。
+- Watch アプリを開いて画面が点いている間だけは、届いた瞬間にアプリが設定の音と振動で知らせます。
+  承認を即時に受けたい作業中はこの状態にしておくのが確実です。
+
+### 到着時刻を測る
+
+両アプリとも、前面に来たときに配信済み通知の到着時刻（OS が記録した date）を履歴に出します。
+Mac からは `devicectl` でアプリの標準出力を読めます（起動セッションの間だけ）:
+
+```bash
+xcrun devicectl list devices                       # 端末の識別子を調べる
+xcrun devicectl device process launch --terminate-existing --console \
+  --device <識別子> com.yourname.prompt-relay.watchkitapp   # Watch (iPhone は .watchkitapp を外す)
+```
+
+承認リクエストは、フックを経由せず API で直接作るのが確実です（エージェント側の権限モードに
+左右されず、期限も指定できます）:
+
+```bash
+curl -s -k -X POST "$PROMPT_RELAY_SERVER_URL/permission-request" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $PROMPT_RELAY_API_KEY" \
+  -d '{"tool_name":"Bash","message":"到着時刻の測定","choices":[{"number":1,"text":"Yes"},{"number":2,"text":"No"}],"has_tmux":true,"can_respond":true,"tmux_target":"test:skew","hostname":"test","timeout":300}'
+```
+
+送信後に Watch アプリと iPhone アプリを開くと、履歴に `配信済 <id>` / `delivered <id>` と到着時刻が出ます。
+サーバのログ（`docker logs -t`）と比べるときは、**サーバと Mac の時計差を先に測って補正**してください
+（`ssh <server> date +%s.%N` と手元の `date +%s.%N` の差。数秒ずれていることがあります）。
+サーバが記録する `apns-id` は、Apple の Push Notifications Console の Delivery Log と突き合わせる鍵です。
+
+### 前面で鳴らない・音が標準音になる
+
+- watchOS は、アプリが前面で画面が点いている間に届いた通知の音を鳴らしません。この状態では
+  アプリ側が iPhone の設定で選んだ音を同梱ファイルから再生し、軽い振動を付けます。
+- Watch の「詳細」の履歴に `振動+音 <ファイル名>` が出ていれば設定の音、`振動` だけなら標準音
+  （iPhone の設定が Watch に届いていない）です。iPhone アプリを開き直すと設定が再送されます。
+- `通知権限なし` や `通知設定 ... timeSensitive=0` が出ていれば、Watch の設定 → 通知 → Prompt Relay
+  を確認してください。
+
 ## hook が発火しない
 
 ### tmux 外で Claude Code を実行している
