@@ -47,6 +47,10 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
             print("[PromptRelayWatch] notification auth granted=\(granted) error=\(String(describing: error))")
             // 権限が無くてもトークン登録は通るので、状態画面で区別できるようにしておく
             if !granted { WatchStatus.shared.set(\.lastEvent, "通知権限なし (Watch の設定で許可が要る)") }
+            // time-sensitive が Watch 側で効いているか (2 = 有効)。無効なら Watch の設定 → 通知で切り替えられる
+            UNUserNotificationCenter.current().getNotificationSettings { st in
+                WatchStatus.shared.log("通知設定 auth=\(st.authorizationStatus.rawValue) alert=\(st.alertSetting.rawValue) sound=\(st.soundSetting.rawValue) timeSensitive=\(st.timeSensitiveSetting.rawValue)")
+            }
             DispatchQueue.main.async {
                 WKApplication.shared().registerForRemoteNotifications()
             }
@@ -308,11 +312,19 @@ final class WatchAppDelegate: NSObject, WKApplicationDelegate, UNUserNotificatio
                 completionHandler([])
                 return
             }
-            // 音と振動はアプリ側の play(.notification) で出す (標準の通知音になる)。
-            // 実機確認: 前面提示で .sound を返しても watchOS は音も振動も出さなかった。
-            // .play: この通知自身が配信済み一覧に載る前後の競合を避けるため、配信済み判定を通さない。
-            WatchStatus.shared.setPending(pending, alert: .play)
-            completionHandler([.banner])
+            if WKApplication.shared().applicationState == .active {
+                // 画面が点いていてこのアプリが前面: 音と振動はアプリ側で出す (設定の音 + 振動)。
+                // 実機確認: active 中に .sound を返しても watchOS は音も振動も出さない。
+                // .play: この通知自身が配信済み一覧に載る前後の競合を避けるため、配信済み判定を通さない。
+                WatchStatus.shared.setPending(pending, alert: .play)
+                completionHandler([.banner])
+            } else {
+                // アプリは最前面だが画面が消えている (inactive): アプリ側の play(_:) は効かず、手首を上げるまで
+                // 鳴らせない。通常の通知として OS に鳴らさせ (即時)、アプリ側では鳴らさない。
+                WatchStatus.shared.setPending(pending, alert: .silent)
+                WatchStatus.shared.log("前面(inactive) OS 提示 \(pending.id)")
+                completionHandler([.banner, .sound])
+            }
         }
     }
 
