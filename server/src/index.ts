@@ -175,6 +175,8 @@ interface ApnsNotificationPayload {
   body: string;
   category?: string;
   collapseId?: string;
+  /// UNIX 秒。承認リクエストは expires_at を渡し、期限切れ後の遅配を APNs 側で止める
+  expiration?: number;
   data?: Record<string, unknown>;
 }
 
@@ -195,7 +197,9 @@ async function trySendApnsNotification(roomKey: string, payload: ApnsNotificatio
     const token = targets[i];
     if (r.status === 'fulfilled') {
       touchDevice(roomKey, token);
-      console.log(`[apns] Notification sent to ${token.substring(0, 16)}... (${devices[i].platform ?? 'ios'})`);
+      // apns-id は Push Notifications Console の Delivery Log と突合するための鍵。
+      // ここでの成功は「APNs が受理した」であって「端末に届いた」ではない。
+      console.log(`[apns] Notification accepted for ${token.substring(0, 16)}... (${devices[i].platform ?? 'ios'}) apns-id=${r.value || '?'}`);
     } else {
       if (isApnsBadDevice(r.reason)) {
         console.log(`[apns] Bad device token, removing: ${token.substring(0, 16)}...`);
@@ -357,6 +361,7 @@ app.post('/permission-request', async (req, res) => {
     body: notifyBody,
     ...(category ? { category } : {}),
     collapseId,
+    expiration: Math.floor(request.expires_at / 1000),
     data: {
       request_id: id,
       type: 'permission_request',
@@ -411,7 +416,13 @@ app.post('/permission-request/:id/respond', (req, res) => {
   let actualResponse: 'allow' | 'deny';
 
   if (typeof choice === 'number') {
-    // 選択肢番号ベース（動的ボタンから）
+    // 選択肢番号ベース（動的ボタンから）。存在しない番号 (クライアントの固定ボタンと
+    // 実際の選択肢がずれた場合等) をターミナルへ送らない
+    if (request.choices.length > 0 && !request.choices.some(c => c.number === choice)) {
+      console.log(`[respond] ${req.params.id}: unknown choice ${choice} [source=${source || 'unknown'}]`);
+      res.status(400).json({ error: 'unknown choice' });
+      return;
+    }
     sendKey = String(choice);
     // Question（AskUserQuestion）は全選択肢が等価な回答なので常に allow
     // 権限プロンプトは最後の選択肢 = deny（No）、それ以外 = allow

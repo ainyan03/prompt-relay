@@ -98,6 +98,9 @@ interface NotificationPayload {
   body: string;
   category?: string;
   collapseId?: string;
+  /// UNIX 秒。これを過ぎた通知は APNs が保存・再送しない (端末オフライン中に期限切れになった
+  /// 承認リクエストが、復帰後に「遅れて届く」のを防ぐ)。省略時は APNs の既定保存ポリシー。
+  expiration?: number;
   data?: Record<string, unknown>;
 }
 
@@ -116,8 +119,9 @@ async function sendApnsRequest(
   pushType: 'alert' | 'background',
   priority: '10' | '5',
   collapseId?: string,
-  platform: ApnsPlatform = 'ios'
-): Promise<void> {
+  platform: ApnsPlatform = 'ios',
+  expiration?: number
+): Promise<string> {
   const bundleId = apnsTopic(platform);
   const body = JSON.stringify(apnsPayload);
   const token = getJwt();
@@ -135,6 +139,9 @@ async function sendApnsRequest(
   if (collapseId) {
     headers['apns-collapse-id'] = collapseId;
   }
+  if (expiration !== undefined) {
+    headers['apns-expiration'] = Math.max(0, Math.floor(expiration));
+  }
 
   try {
     return await attemptApnsRequest(headers, body);
@@ -147,7 +154,8 @@ async function sendApnsRequest(
   }
 }
 
-function attemptApnsRequest(headers: Record<string, string | number>, body: string): Promise<void> {
+/// 成功時は APNs が付けた apns-id を返す (Push Notifications Console の Delivery Log と突合するため)
+function attemptApnsRequest(headers: Record<string, string | number>, body: string): Promise<string> {
   return new Promise((resolve, reject) => {
     let req: ReturnType<http2.ClientHttp2Session['request']>;
     try {
@@ -166,9 +174,11 @@ function attemptApnsRequest(headers: Record<string, string | number>, body: stri
 
     let responseData = '';
     let statusCode = 0;
+    let apnsId = '';
 
     req.on('response', (headers) => {
       statusCode = headers[':status'] as number;
+      apnsId = typeof headers['apns-id'] === 'string' ? headers['apns-id'] : '';
     });
 
     req.on('data', (chunk) => {
@@ -177,7 +187,7 @@ function attemptApnsRequest(headers: Record<string, string | number>, body: stri
 
     req.on('end', () => {
       if (statusCode === 200) {
-        resolve();
+        resolve(apnsId);
       } else {
         let reason = responseData;
         try {
@@ -204,7 +214,7 @@ export interface SendOptions {
   sound?: string;
 }
 
-export async function sendNotification(deviceToken: string, payload: NotificationPayload, options: SendOptions = {}): Promise<void> {
+export async function sendNotification(deviceToken: string, payload: NotificationPayload, options: SendOptions = {}): Promise<string> {
   const apnsPayload = {
     aps: {
       alert: {
@@ -220,14 +230,14 @@ export async function sendNotification(deviceToken: string, payload: Notificatio
     ...payload.data,
   };
 
-  return sendApnsRequest(deviceToken, apnsPayload, 'alert', '10', payload.collapseId, options.platform);
+  return sendApnsRequest(deviceToken, apnsPayload, 'alert', '10', payload.collapseId, options.platform, payload.expiration);
 }
 
 export async function sendSilentNotification(
   deviceToken: string,
   data: Record<string, unknown>,
   platform: ApnsPlatform = 'ios'
-): Promise<void> {
+): Promise<string> {
   const apnsPayload = {
     aps: { 'content-available': 1 },
     ...data,
