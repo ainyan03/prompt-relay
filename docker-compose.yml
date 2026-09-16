@@ -5,8 +5,12 @@ services:
     image: prompt-relay:latest
     container_name: prompt-relay
     env_file: ./server/.env
+    environment:
+      # 端末登録（APNs トークン・Web Push 購読）を永続化。コンテナ再作成後もアプリの再登録が不要になる
+      DEVICE_STORE_PATH: /app/data/devices.json
     volumes:
       - ./server/certs:/app/certs
+      - ./server/data:/app/data
     ports:
       - "3939:3939"
       - "3940:3940"

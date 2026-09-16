@@ -188,3 +188,5 @@ Docker コンテナはホストのネットワークインターフェースを�
 - **環境変数で明示指定**: `.env` に `HTTPS_EXTRA_SANS=myserver.example.com,192.168.1.100` を追加
 
 **注意**: `.env` の内容を変更した場合、`docker compose restart` では反映されません。`docker compose down && docker compose up -d` で再作成してください。
+
+端末登録（APNs トークン・Web Push 購読）は `docker-compose.yml` の `DEVICE_STORE_PATH` により `server/data/devices.json` に保存され、コンテナを再作成しても保持されます。このファイルにはルームキーが含まれるため、`server/data/` の権限に注意してください（既定で 0600 で書き出します）。`DEVICE_STORE_PATH` を指定しない場合は従来どおりメモリのみで、再作成後はアプリを一度完全に終了して開き直す必要があります。

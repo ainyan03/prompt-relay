@@ -5,6 +5,7 @@ __pycache__/
 *.p8
 server/certs/*.p8
 server/certs/*.pem
+server/data/
 dist/
 .DS_Store
 app-ios/PromptRelay/PromptRelay.xcodeproj/xcuserdata/
@@ -32,3 +33,6 @@ app-android/gradle/wrapper/gradle-wrapper.jar
 
 # Test scripts
 test*.sh
+
+# ローカル専用スクリプト (デプロイ先などの環境固有情報を含む)
+*.local.sh

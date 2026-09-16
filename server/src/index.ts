@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import type { Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
 import { config } from 'dotenv';
-import { createRequest, getRequest, respondToRequest, cancelRequest, resolveSendKey, registerDevice, getDeviceTokens, removeDevice, touchDevice, registerWebPush, getWebPushSubscriptions, removeWebPush, touchWebPush, getAllRequests, cleanup, hasPendingRequest, serializeRequest, PENDING_TIMEOUT_MS } from './store.js';
+import { createRequest, getRequest, respondToRequest, cancelRequest, resolveSendKey, registerDevice, getDeviceTokens, removeDevice, touchDevice, registerWebPush, getWebPushSubscriptions, removeWebPush, touchWebPush, getAllRequests, cleanup, hasPendingRequest, serializeRequest, loadDevices, PENDING_TIMEOUT_MS } from './store.js';
 import { sendNotification, sendSilentNotification, isConfigured, isApnsBadDevice } from './apns.js';
 import { initWebPush, sendWebPushNotification, isConfigured as isWebPushConfigured, getVapidPublicKey } from './web-push.js';
 import { ensureCerts, getLanIPs, isSanCovered, regenerateCert, dynamicSanCount } from './certs.js';
@@ -520,6 +520,10 @@ app.post('/notify', async (req, res) => {
 setInterval(cleanup, 60 * 1000);
 
 // HTTP サーバ起動
+// 保存済みの端末登録を読み戻す (DEVICE_STORE_PATH 指定時のみ)。再デプロイ後の再登録を不要にする。
+const restoredDevices = loadDevices();
+if (restoredDevices > 0) console.log(`[store] Restored ${restoredDevices} device registration(s) from ${process.env.DEVICE_STORE_PATH}`);
+
 const httpServer = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[server] HTTP  : http://0.0.0.0:${PORT} (built: ${new Date().toISOString()})`);
   console.log(`[server] APNs configured: ${isConfigured()}`);

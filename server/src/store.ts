@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 export interface Choice {
   number: number;
   text: string;
@@ -72,6 +74,73 @@ const MAX_ROOMS = Math.max(1, parseInt(process.env.MAX_ROOMS || '10', 10));
 const MAX_DEVICES = Math.max(1, parseInt(process.env.MAX_DEVICES || '4', 10));
 const rooms = new Map<string, RoomState>();
 
+// --- 端末登録の永続化 ---
+// DEVICE_STORE_PATH を指定すると、APNs トークンと Web Push 購読をその JSON に保存し起動時に読み戻す。
+// 未指定ならメモリのみ（従来どおり: コンテナ再作成のたびに端末側の再登録が要る）。
+// ファイルにはルームキー（認証用の秘密）がそのまま入るため、ボリュームの権限に注意し 0600 で書く。
+const DEVICE_STORE_PATH = process.env.DEVICE_STORE_PATH || '';
+const DEVICE_STORE_VERSION = 1;
+let saveTimer: NodeJS.Timeout | null = null;
+
+interface PersistedRoom {
+  apnsDevices: DeviceEntry[];
+  webPushDevices: WebPushEntry[];
+}
+
+interface PersistedStore {
+  version: number;
+  rooms: Record<string, PersistedRoom>;
+}
+
+/** 変更を 100ms まとめて書く（連続する登録・push 更新で書き込みが重ならないように） */
+function scheduleSave(): void {
+  if (!DEVICE_STORE_PATH) return;
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveDevicesNow();
+  }, 100);
+  saveTimer.unref();
+}
+
+export function saveDevicesNow(): void {
+  if (!DEVICE_STORE_PATH) return;
+  const data: PersistedStore = { version: DEVICE_STORE_VERSION, rooms: {} };
+  for (const [key, room] of rooms) {
+    if (room.apnsDevices.length === 0 && room.webPushDevices.length === 0) continue;
+    data.rooms[key] = { apnsDevices: room.apnsDevices, webPushDevices: room.webPushDevices };
+  }
+  try {
+    fs.mkdirSync(path.dirname(DEVICE_STORE_PATH), { recursive: true });
+    const tmp = `${DEVICE_STORE_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+    fs.renameSync(tmp, DEVICE_STORE_PATH);
+  } catch (err) {
+    console.error(`[store] Failed to save device store: ${(err as Error).message}`);
+  }
+}
+
+/** 起動時に呼ぶ。保存済みの端末登録をルームへ戻し、読み込んだ端末数を返す */
+export function loadDevices(): number {
+  if (!DEVICE_STORE_PATH || !fs.existsSync(DEVICE_STORE_PATH)) return 0;
+  let data: PersistedStore;
+  try {
+    data = JSON.parse(fs.readFileSync(DEVICE_STORE_PATH, 'utf8')) as PersistedStore;
+  } catch (err) {
+    console.error(`[store] Failed to load device store: ${(err as Error).message}`);
+    return 0;
+  }
+  if (data.version !== DEVICE_STORE_VERSION || !data.rooms) return 0;
+  let count = 0;
+  for (const [key, saved] of Object.entries(data.rooms)) {
+    const room = getOrCreateRoom(key);
+    room.apnsDevices = Array.isArray(saved.apnsDevices) ? saved.apnsDevices.filter(d => typeof d?.token === 'string') : [];
+    room.webPushDevices = Array.isArray(saved.webPushDevices) ? saved.webPushDevices.filter(w => typeof w?.subscription?.endpoint === 'string') : [];
+    count += room.apnsDevices.length + room.webPushDevices.length;
+  }
+  return count;
+}
+
 function createRoomState(): RoomState {
   return {
     requests: new Map(),
@@ -115,6 +184,7 @@ function evictOldestRoom(): void {
   if (oldestKey) {
     rooms.delete(oldestKey);
     console.log(`[store] Room evicted (LRU): ${oldestKey.substring(0, 8)}...`);
+    scheduleSave();
   }
 }
 
@@ -152,12 +222,14 @@ export function registerDevice(roomKey: string, token: string, options: DeviceOp
     existing.registeredAt = Date.now();
     existing.platform = options.platform;
     existing.sounds = options.sounds;
+    scheduleSave();
     return;
   }
   if (room.apnsDevices.length >= MAX_DEVICES) {
     evictOldest(room.apnsDevices, d => d.lastPushAt ?? d.registeredAt);
   }
   room.apnsDevices.push({ token, registeredAt: Date.now(), lastPushAt: null, platform: options.platform, sounds: options.sounds });
+  scheduleSave();
 }
 
 export function getDeviceTokens(roomKey: string): DeviceEntry[] {
@@ -168,14 +240,20 @@ export function removeDevice(roomKey: string, token: string): void {
   const room = getRoom(roomKey);
   if (!room) return;
   const idx = room.apnsDevices.findIndex(d => d.token === token);
-  if (idx !== -1) room.apnsDevices.splice(idx, 1);
+  if (idx !== -1) {
+    room.apnsDevices.splice(idx, 1);
+    scheduleSave();
+  }
 }
 
 export function touchDevice(roomKey: string, token: string): void {
   const room = getRoom(roomKey);
   if (!room) return;
   const entry = room.apnsDevices.find(d => d.token === token);
-  if (entry) entry.lastPushAt = Date.now();
+  if (entry) {
+    entry.lastPushAt = Date.now();
+    scheduleSave();
+  }
 }
 
 // --- Web Push デバイス管理 ---
@@ -202,6 +280,7 @@ export function registerWebPush(roomKey: string, sub: WebPushSubscription): void
     evictOldest(room.webPushDevices, d => d.lastPushAt ?? d.registeredAt);
   }
   room.webPushDevices.push({ subscription: sub, registeredAt: Date.now(), lastPushAt: null });
+  scheduleSave();
 }
 
 export function getWebPushSubscriptions(roomKey: string): WebPushEntry[] {
@@ -212,7 +291,10 @@ export function removeWebPush(roomKey: string, endpoint: string): void {
   const room = getRoom(roomKey);
   if (!room) return;
   const idx = room.webPushDevices.findIndex(d => d.subscription.endpoint === endpoint);
-  if (idx !== -1) room.webPushDevices.splice(idx, 1);
+  if (idx !== -1) {
+    room.webPushDevices.splice(idx, 1);
+    scheduleSave();
+  }
 }
 
 export function touchWebPush(roomKey: string, endpoint: string): void {
