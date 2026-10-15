@@ -7,6 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CODEX_HOOKS="$HOME/.codex/hooks.json"
+AGY_HOOKS="$HOME/.gemini/config/hooks.json"
 PERMISSION_HOOK="$SCRIPT_DIR/hook/permission-request.sh"
 CODEX_PERMISSION_HOOK="$SCRIPT_DIR/hook/codex-permission-request.sh"
 NOTIFICATION_HOOK="$SCRIPT_DIR/hook/notification.sh"
@@ -42,7 +43,7 @@ else
   SHELL_RC="$HOME/.bashrc"
 fi
 
-echo "[1/4] 環境変数の設定"
+echo "[1/5] 環境変数の設定"
 echo ""
 
 # SERVER_URL
@@ -108,7 +109,7 @@ fi
 
 # --- Claude Code settings.json への hook マージ ---
 
-echo "[2/4] Claude Code hook の登録"
+echo "[2/5] Claude Code hook の登録"
 echo ""
 
 mkdir -p "$HOME/.claude"
@@ -118,6 +119,8 @@ mkdir -p "$HOME/.claude"
 # - Notification: アイドル状態の通知
 HOOKS_JSON=$(cat <<HOOKS_EOF
 {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK --agent claude", "timeout": 10}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK --agent claude", "timeout": 10}]}],
   "PreToolUse": [
     {
       "matcher": "",
@@ -160,7 +163,11 @@ else
     (if any(.hooks.PreToolUse[]?.hooks[]?; .command == $permission) then .
      else .hooks.PreToolUse += $new_hooks.PreToolUse end) |
     (if any(.hooks.Notification[]?.hooks[]?; .command == $notification) then .
-     else .hooks.Notification += $new_hooks.Notification end)
+     else .hooks.Notification += $new_hooks.Notification end) |
+    reduce ["UserPromptSubmit", "Stop"][] as $event (.;
+      .hooks[$event] = (.hooks[$event] // []) |
+      if any(.hooks[$event][]?.hooks[]?; .command == ($notification + " --agent claude")) then .
+      else .hooks[$event] += $new_hooks[$event] end)
   ' "$CLAUDE_SETTINGS")
   echo "$MERGED" | jq . > "$CLAUDE_SETTINGS"
   echo "  hook を登録・確認しました"
@@ -169,13 +176,14 @@ fi
 # --- Codex hooks.json への hook マージ ---
 
 echo ""
-echo "[3/4] Codex hook の登録"
+echo "[3/5] Codex hook の登録"
 echo ""
 
 mkdir -p "$HOME/.codex"
 
 CODEX_HOOKS_JSON=$(cat <<HOOKS_EOF
 {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK --agent codex", "timeout": 10}]}],
   "PermissionRequest": [
     {
       "matcher": "*",
@@ -193,7 +201,7 @@ CODEX_HOOKS_JSON=$(cat <<HOOKS_EOF
       "hooks": [
         {
           "type": "command",
-          "command": "$NOTIFICATION_HOOK",
+          "command": "$NOTIFICATION_HOOK --agent codex",
           "timeout": 10
         }
       ]
@@ -214,17 +222,46 @@ else
     .hooks.Stop = (.hooks.Stop // []) |
     (if any(.hooks.PermissionRequest[]?.hooks[]?; .command == $permission) then .
      else .hooks.PermissionRequest += $new_hooks.PermissionRequest end) |
-    (if any(.hooks.Stop[]?.hooks[]?; .command == $notification) then .
-     else .hooks.Stop += $new_hooks.Stop end)
+    (if any(.hooks.Stop[]?.hooks[]?; .command == $notification or .command == ($notification + " --agent codex")) then .
+     else .hooks.Stop += $new_hooks.Stop end) |
+    .hooks.UserPromptSubmit = (.hooks.UserPromptSubmit // []) |
+    (if any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == ($notification + " --agent codex")) then .
+     else .hooks.UserPromptSubmit += $new_hooks.UserPromptSubmit end)
   ' "$CODEX_HOOKS")
   echo "$MERGED" | jq . > "$CODEX_HOOKS"
   echo "  hook を登録・確認しました"
 fi
 
+# --- Antigravity CLI の名前付き hook マージ ---
+
+echo ""
+echo "[4/5] Antigravity CLI hook の登録"
+echo ""
+
+if [ -d "$HOME/.gemini" ]; then
+  mkdir -p "$HOME/.gemini/config"
+  if [ ! -f "$AGY_HOOKS" ]; then
+    printf '{}\n' > "$AGY_HOOKS"
+  fi
+  # Antigravity uses named hook objects with flat handler arrays.
+  MERGED=$(jq --arg notification "$NOTIFICATION_HOOK" '
+    .["prompt-relay"] = (.["prompt-relay"] // {}) |
+    reduce ["PreInvocation", "Stop"][] as $event (.;
+      ($notification + " --agent agy --event " + $event) as $command |
+      .["prompt-relay"][$event] = (.["prompt-relay"][$event] // []) |
+      if any(.["prompt-relay"][$event][]?; .command == $command) then .
+      else .["prompt-relay"][$event] += [{type: "command", command: $command, timeout: 10}] end)
+  ' "$AGY_HOOKS")
+  echo "$MERGED" | jq . > "$AGY_HOOKS"
+  echo "  hook を登録・確認しました"
+else
+  echo "  ~/.gemini がないためスキップしました"
+fi
+
 # --- 完了 ---
 
 echo ""
-echo "[4/4] セットアップ完了"
+echo "[5/5] セットアップ完了"
 echo ""
 echo "  Hook スクリプト:"
 echo "    Claude PreToolUse:      $PERMISSION_HOOK"
@@ -234,11 +271,14 @@ echo ""
 echo "  設定ファイル:"
 echo "    $CLAUDE_SETTINGS"
 echo "    $CODEX_HOOKS"
+if [ -d "$HOME/.gemini" ]; then
+  echo "    $AGY_HOOKS"
+fi
 echo "    $SHELL_RC"
 echo ""
 echo "  次のステップ:"
 echo "    1. source $SHELL_RC"
-echo "    2. Claude Code / Codex を再起動"
+echo "    2. Claude Code / Codex / Antigravity CLI を再起動"
 echo "    3. Codex では /hooks を開いて新しい hook を確認・信頼"
 echo "    4. アプリでサーバ URL とルームキーを設定"
 echo ""
