@@ -12,6 +12,7 @@ Claude Code / Codex の承認待ちをスマホで操作するためのツール
 - 通知から承認・拒否を選択すると Claude Code / Codex に自動反映
 - プランモード等で連続する承認プロンプトにも対応（自動で次のプロンプトを検出）
 - 処理完了時にも通知でお知らせ
+- **複数エージェントの完了通知をまとめる**: 1 つの tmux セッションで複数のエージェントを動かすとき、全員が待機したときだけ 1 回通知（Claude Code / Codex / Antigravity CLI、設定で有効化）
 - 同一ターミナルの通知は最新1件に自動上書き（通知の溜まりを防止）
 - ブラウザだけで利用可能（PWA）、アプリのインストール不要
 - iPhone ネイティブアプリにも対応（Apple Developer Program が必要）
@@ -41,6 +42,7 @@ Claude Code / Codex (権限プロンプト / ターン・goal完了)
 hook/permission-request.sh  ── PreToolUse で発火、tmux 画面をパースしてサーバへ転送
 hook/codex-permission-request.sh ── PermissionRequest の構造化データと応答を中継
 hook/notification.sh        ── ターン完了・Codex goal状態の通知を送信
+hook/idle_state.py          ── session モードで各エージェントの作業中/待機を記録し、全員の待機を判定
     │
     ├──▶ Node.js Server (Express)  ── リクエスト管理 + APNs / Web Push 送信
     │       ├──▶ Apple Push Notification Service ──▶ iOS App / Apple Watch
@@ -81,11 +83,14 @@ cd ~/prompt-relay
    └─ 物理ボタンで使いたい → docs/setup-esp32.md  （M5Stack）
 ```
 
+1 つの tmux セッションで複数のエージェントを動かす場合は、完了通知をまとめる session モードも使えます（[docs/session-idle.md](docs/session-idle.md)）。
+
 | ドキュメント | 内容 |
 |---|---|
 | [サーバセットアップ](docs/setup-server.md) | Node.js サーバ、.env 設定、API 認証、Docker デプロイ、マルチホスト・デュアルサーバ構成 |
 | [Claude Code フック設定](docs/setup-hooks.md) | settings.json の設定、フックの動作原理 |
 | [Codex フック設定](docs/setup-codex.md) | hooks.json の設定、PermissionRequest の動作原理 |
+| [複数エージェントの完了通知](docs/session-idle.md) | session モード（tmux セッション内の全エージェントの待機で 1 回通知）、Antigravity CLI の登録 |
 | [PWA（ブラウザ）](docs/setup-pwa.md) | HTTPS 証明書、PWA インストール（Android / iOS / Tailscale） |
 | [iOS アプリ](docs/setup-ios.md) | Apple Developer Portal 設定、Xcode ビルド |
 | [Android アプリ](docs/setup-android.md) | Android Studio ビルド、通知設定 |
@@ -135,8 +140,9 @@ prompt-relay/
 │   ├── codex-permission-request.sh # Codex 権限リクエスト（PermissionRequest）
 │   ├── codex_goal_status.py    # Codex App Serverからgoal状態を読み取り
 │   ├── prompt_parser.py        # プロンプト検出・パースロジック
+│   ├── idle_state.py           # session モードの待機状態の記録と判定
 │   ├── test_prompt_parser.py   # パーサーの単体テスト
-│   └── notification.sh         # 汎用通知送信（Notification）
+│   └── notification.sh         # 完了通知（Notification / UserPromptSubmit / Stop）
 ├── server-esp32/           # ESP32 (M5Stack) 版サーバ
 ├── app-android/            # Android アプリ (Jetpack Compose)
 ├── app-ios/                # iOS アプリ (SwiftUI)
@@ -158,7 +164,7 @@ prompt-relay/
 6. 通知から直接応答、または アプリを開いて応答
 7. フックスクリプトが応答を受け取り、tmux TUIまたはCodex hook応答へ反映
 8. tmux 側で手動回答した場合は、アプリ側が自動的に「Cancelled」に更新
-9. 処理が完了すると完了通知が届く
+9. 処理が完了すると完了通知が届く（session モードでは、tmux セッション内の全エージェントが待機したときに 1 回）
 
 ## 注意事項
 

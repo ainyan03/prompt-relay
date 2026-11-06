@@ -13,12 +13,13 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
-if [ "$AGENT" = "agy" ]; then
-  printf '{}\n'
-  [ "${PROMPT_RELAY_IDLE_SCOPE:-pane}" != "session" ] && exit 0
-fi
+[ "$AGENT" = "agy" ] && printf '{}\n'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/config.sh"
+if [ "$AGENT" = "agy" ] && [ "${PROMPT_RELAY_IDLE_SCOPE:-pane}" != "session" ]; then
+  exit 0
+fi
 source "${SCRIPT_DIR}/common.sh"
 
 send_notification() {

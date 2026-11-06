@@ -90,6 +90,10 @@ Codex TUIが `Yes, proceed`、`Yes, and don't ask again ...`、`No ...` の3択�
 
 同じgoal状態から複数回`Stop`が発火しても、`event_id`によってサーバ側で重複配信を抑止します。
 
+1 つの tmux セッションで複数のエージェントを動かし、全員の完了時にだけ通知したい場合は、
+`UserPromptSubmit` hook も登録して session モードを使います
+（[複数エージェントの完了通知をまとめる](session-idle.md)）。
+
 ## モード設定
 
 `PROMPT_RELAY_CODEX_MODE` で動作を固定できます。

@@ -50,6 +50,7 @@ def run_stop_hook(tmp_path, goal, *, codex_exists=True):
         "PROMPT_RELAY_API_KEY": "test-key",
         "PROMPT_RELAY_SERVER_URL": "http://relay.test",
         "PROMPT_RELAY_CODEX_BIN": str(codex),
+        "PROMPT_RELAY_CONFIG": str(tmp_path / "missing-config"),
         "CURL_CAPTURE": str(capture),
     })
     result = subprocess.run(
@@ -146,6 +147,7 @@ def idle_env(tmp_path):
         'PROMPT_RELAY_CODEX_GOAL_AWARE': 'false',
         'CURL_CAPTURE': str(tmp_path / 'notifications'),
         'TMUX_PANE': '%1',
+        'PROMPT_RELAY_CONFIG': str(tmp_path / 'missing-config'),
     })
     return env
 
@@ -479,3 +481,48 @@ def test_agy_repeated_preinvocation_does_not_parse_or_rewrite_busy_state(idle_en
     assert path.read_bytes() == previous
     assert path.stat().st_mtime_ns == modified
     assert not notifications(idle_env)
+
+
+def write_config(env, tmp_path, text):
+    config = tmp_path / 'config'
+    config.write_text(text)
+    env['PROMPT_RELAY_CONFIG'] = str(config)
+
+
+def test_config_file_enables_session_mode_without_env(idle_env, tmp_path):
+    # シェル設定を読まずに起動したエージェント (tmux new-window 直起動等) を想定
+    del idle_env['PROMPT_RELAY_IDLE_SCOPE']
+    write_config(idle_env, tmp_path, '# comment\n\n  export PROMPT_RELAY_IDLE_SCOPE="session"  \n')
+    run_idle_hook(idle_env, 'Notification', None, notification_type='idle_prompt')
+    assert not notifications(idle_env)
+    run_idle_hook(idle_env, 'Stop')
+    assert wait_for_notifications(idle_env, 1)[0]['message'] == '全エージェントの処理が完了しました'
+
+
+def test_env_overrides_config_file(idle_env, tmp_path):
+    idle_env['PROMPT_RELAY_IDLE_SCOPE'] = 'pane'
+    write_config(idle_env, tmp_path, "PROMPT_RELAY_IDLE_SCOPE='session'\n")
+    run_idle_hook(idle_env, 'Notification', None, notification_type='idle_prompt')
+    assert notifications(idle_env)[0]['message'] == '処理が完了しました'
+
+
+def test_config_file_reaches_agy_and_idle_worker(idle_env, tmp_path):
+    # GRACE は idle_state.py (別プロセス) が読むので、export されていることも確かめる
+    for key in ('PROMPT_RELAY_IDLE_SCOPE', 'PROMPT_RELAY_IDLE_GRACE'):
+        del idle_env[key]
+    write_config(idle_env, tmp_path, 'PROMPT_RELAY_IDLE_SCOPE=session\nPROMPT_RELAY_IDLE_GRACE=0')
+    result = subprocess.run([str(HOOK), '--agent', 'agy', '--event', 'Stop'], env=idle_env,
+                            text=True, capture_output=True, timeout=5)
+    assert result.returncode == 0
+    assert result.stdout == '{}\n'
+    assert wait_for_notifications(idle_env, 1)[0]['message'] == '全エージェントの処理が完了しました'
+
+
+def test_config_file_ignores_other_names_and_does_not_execute(idle_env, tmp_path):
+    marker = tmp_path / 'executed'
+    del idle_env['PROMPT_RELAY_IDLE_SCOPE']
+    write_config(idle_env, tmp_path, f'touch {marker}\nPATH=/nonexistent\nPROMPT_RELAY_IDLE_SCOPE=$(touch {marker})\n')
+    run_idle_hook(idle_env, 'Notification', None, notification_type='idle_prompt')
+    assert not marker.exists()
+    # 不正な scope 値は pane 扱いになり、PATH は書き換わらず通知が送られる
+    assert notifications(idle_env)[0]['message'] == '処理が完了しました'

@@ -1,6 +1,8 @@
 #!/bin/bash
 # 共通設定・ヘルパー
 
+source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+
 SERVER_URL="${PROMPT_RELAY_SERVER_URL:-http://localhost:3939}" # プライマリサーバのURL
 API_KEY="${PROMPT_RELAY_API_KEY:-}"                          # Bearer トークン認証用（ルームキー、8〜128文字）
 

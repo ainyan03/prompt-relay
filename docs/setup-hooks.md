@@ -97,7 +97,8 @@ tmux 側で手動回答するとプロンプトが消えるため、バックグ
 
 処理完了などの通知を送信します。既定では Claude Code の `idle_prompt` と
 Codex の `Stop` で通知します。session モードでは `UserPromptSubmit` で作業開始を記録し、
-`Stop` で待機への移行を記録します。
+`Stop` で待機への移行を記録し、tmux セッション内の全エージェントが待機したときに 1 回だけ通知します
+（[複数エージェントの完了通知をまとめる](session-idle.md)）。
 
 ### matcher について
 
@@ -106,7 +107,13 @@ Codex の `Stop` で通知します。session モードでは `UserPromptSubmit`
 
 ### 環境変数
 
-フックスクリプトは以下の環境変数を参照します:
+フックスクリプトは以下の環境変数を参照します。
+
+環境変数のほか、設定ファイル `~/.config/prompt-relay/config`（`PROMPT_RELAY_CONFIG` で変更可）にも
+`KEY=VALUE` の形で 1 行に 1 項目ずつ書けます。先頭の `export` と、値を囲む引用符は省けます。
+`PROMPT_RELAY_` で始まる項目だけを読み、同じ項目が環境変数にもある場合は環境変数を優先します。
+環境変数はエージェントの起動時に受け継がれるので、起動経路によっては届きません。
+設定ファイルはフックが実行のたびに読むため、起動経路に左右されません。
 
 | 変数 | 説明 | デフォルト |
 |---|---|---|
@@ -121,42 +128,5 @@ Codex の `Stop` で通知します。session モードでは `UserPromptSubmit`
 | `PROMPT_RELAY_IDLE_GRACE` | session モードで全体の待機を再判定するまでの秒数 | `5` |
 | `PROMPT_RELAY_STATE_DIR` | 待機状態ファイルの保存先 | `/tmp/prompt-relay-state-<uid>` |
 
-`PROMPT_RELAY_IDLE_SCOPE=session` にすると、tmux セッション内で状態を記録した
-全エージェントが待機してから猶予時間が経過したとき、1 回だけ通知します。
-`setup.sh` を再実行して、Claude Code の `UserPromptSubmit` / `Stop` と
-Codex の `UserPromptSubmit` / `Stop` に必要な hook を登録してください。
-これらは `notification.sh --agent claude` / `notification.sh --agent codex` を呼びます。
-既存の引数なし Codex `Stop` 登録もそのまま使えます。
-tmux 外では従来のペイン単位の動作になります。承認・質問の通知経路は変わりません。
-
-待機はターン終了で判定し、バックグラウンド作業は見ません。
-ユーザーが Esc で中断したペインは、次のターンまで busy のまま残ります。
-Codex の goal が active の間は待機扱いになりません。
-
-session モードの通常完了通知は、Claude / Codex とも「全エージェントの処理が完了しました」に統一します。
-Codex goal のブロック・一時停止・利用上限・予算上限は、それぞれの理由を示す文面を維持します。
-
-### Antigravity CLI (agy)
-
-Antigravity CLI は session モードの待機集計にだけ参加します。
-pane モードでは通知しません。権限確認プロンプトの中継は対象外です。
-`~/.gemini` が存在する環境で `setup.sh` を実行すると、
-`~/.gemini/config/hooks.json` に次の名前付き hook を登録します（既存の hook は保持します）。
-手動で登録する場合も、`PreInvocation` / `Stop` は matcher を使わないフラットな配列にします。
-
-```json
-{
-  "prompt-relay": {
-    "PreInvocation": [
-      {"type": "command", "command": "/path/to/prompt-relay/hook/notification.sh --agent agy --event PreInvocation", "timeout": 10}
-    ],
-    "Stop": [
-      {"type": "command", "command": "/path/to/prompt-relay/hook/notification.sh --agent agy --event Stop", "timeout": 10}
-    ]
-  }
-}
-```
-
-`PROMPT_RELAY_IDLE_SCOPE=session` を設定して agy を再起動してください。
-`PreInvocation` で busy、`Stop` で idle を記録し、`fullyIdle` は判定に使いません。
-Esc 中断では `Stop` が出ないため、次のターンまで busy が残ります。
+session モードの設定項目・hook の登録方法・判定の仕組みは
+[複数エージェントの完了通知をまとめる](session-idle.md) を参照してください。
