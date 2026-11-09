@@ -12,6 +12,9 @@ final class WatchStatus: ObservableObject {
     @Published var phoneState = "未送信"
     @Published var registerState = "未実行"
     @Published var lastEvent = "-"
+    /// 状態 (Token / iPhone / 登録 / 承認枠) が実際に変わった回数。以前は書き込みのたびに数えていたが、
+    /// 前面復帰や通知のバナーで同じ値を書き直すだけでも増え、処理の空回りと見分けがつかなかった。
+    /// 直近イベントは前面復帰のたびに「問い合わせ」→「結果」と入れ替わるので数えない (履歴に残る)。
     @Published var counter = 0
     /// 時刻付きの直近イベント (新しい順)。人が秒を測らずに済むように Watch 側で記録する。
     @Published var eventLog: [String] = []
@@ -76,8 +79,8 @@ final class WatchStatus: ObservableObject {
         Self.onMain {
             let changed = self.pendingRequest?.id != request?.id
             self.pendingRequest = request
-            self.counter += 1
             if changed {
+                self.counter += 1
                 let text = request.map { "枠表示 \($0.id)" } ?? "枠消去"
                 self.appendLog("\(Self.stamp(now)) \(text)")
             }
@@ -147,8 +150,11 @@ final class WatchStatus: ObservableObject {
     func set(_ keyPath: ReferenceWritableKeyPath<WatchStatus, String>, _ value: String) {
         let now = Date()
         Self.onMain {
-            self[keyPath: keyPath] = value
-            self.counter += 1
+            if self[keyPath: keyPath] != value {
+                self[keyPath: keyPath] = value
+                if keyPath != \.lastEvent { self.counter += 1 }
+            }
+            // 直近イベントは同じ文面でも起きた事実なので、履歴には毎回残す
             if keyPath == \.lastEvent {
                 self.appendLog("\(Self.stamp(now)) \(value)")
             }
