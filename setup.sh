@@ -25,12 +25,6 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
-if ! command -v tmux &>/dev/null; then
-  echo "警告: tmux がインストールされていません"
-  echo "  Claude Code、およびCodexのTUI＋スマホ併用には tmux が必要です"
-  echo ""
-fi
-
 # hook スクリプトに実行権限を付与
 chmod +x "$PERMISSION_HOOK" "$CODEX_PERMISSION_HOOK" "$NOTIFICATION_HOOK" "$CODEX_GOAL_STATUS"
 
@@ -116,7 +110,7 @@ mkdir -p "$HOME/.claude"
 
 # 新しい hooks 設定を生成
 # - PreToolUse: 権限プロンプトの即時検出・転送（全ツール実行前に発火）
-# - Notification: アイドル状態の通知
+# - Notification: アイドル状態と画面操作できない端末の承認待ちを通知
 HOOKS_JSON=$(cat <<HOOKS_EOF
 {
   "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK --agent claude", "timeout": 10}]}],
@@ -136,13 +130,11 @@ HOOKS_JSON=$(cat <<HOOKS_EOF
   "Notification": [
     {
       "matcher": "idle_prompt",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "$NOTIFICATION_HOOK",
-          "timeout": 10
-        }
-      ]
+      "hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK", "timeout": 10}]
+    },
+    {
+      "matcher": "permission_prompt",
+      "hooks": [{"type": "command", "command": "$NOTIFICATION_HOOK", "timeout": 10}]
     }
   ]
 }
@@ -162,8 +154,12 @@ else
     .hooks.Notification = (.hooks.Notification // []) |
     (if any(.hooks.PreToolUse[]?.hooks[]?; .command == $permission) then .
      else .hooks.PreToolUse += $new_hooks.PreToolUse end) |
-    (if any(.hooks.Notification[]?.hooks[]?; .command == $notification) then .
-     else .hooks.Notification += $new_hooks.Notification end) |
+    reduce $new_hooks.Notification[] as $handler (.;
+      if any(.hooks.Notification[]?;
+        ((.matcher // "") == "" or
+         (((.matcher // "") | gsub("[()^$]"; "") | split("|")) | index($handler.matcher)) != null) and
+        any(.hooks[]?; .command == $notification)) then .
+      else .hooks.Notification += [$handler] end) |
     reduce ["UserPromptSubmit", "Stop"][] as $event (.;
       .hooks[$event] = (.hooks[$event] // []) |
       if any(.hooks[$event][]?.hooks[]?; .command == ($notification + " --agent claude")) then .
@@ -243,14 +239,21 @@ if [ -d "$HOME/.gemini" ]; then
   if [ ! -f "$AGY_HOOKS" ]; then
     printf '{}\n' > "$AGY_HOOKS"
   fi
-  # Antigravity uses named hook objects with flat handler arrays.
-  MERGED=$(jq --arg notification "$NOTIFICATION_HOOK" '
+  # Antigravity lifecycle events use flat handlers, but PreToolUse requires
+  # matcher/hooks wrappers. A direct PreToolUse handler is silently ignored.
+  MERGED=$(jq --arg notification "$NOTIFICATION_HOOK" --arg permission "$PERMISSION_HOOK" '
     .["prompt-relay"] = (.["prompt-relay"] // {}) |
-    reduce ["PreInvocation", "Stop"][] as $event (.;
+    (reduce ["PreInvocation", "Stop"][] as $event (.;
       ($notification + " --agent agy --event " + $event) as $command |
       .["prompt-relay"][$event] = (.["prompt-relay"][$event] // []) |
       if any(.["prompt-relay"][$event][]?; .command == $command) then .
-      else .["prompt-relay"][$event] += [{type: "command", command: $command, timeout: 10}] end)
+      else .["prompt-relay"][$event] += [{type: "command", command: $command, timeout: 10}] end)) |
+    ($permission + " --agent agy") as $command |
+    .["prompt-relay"].PreToolUse =
+      [.["prompt-relay"].PreToolUse[]? | select(.command != $command)] |
+    if any(.["prompt-relay"].PreToolUse[]?.hooks[]?; .command == $command) then .
+    else .["prompt-relay"].PreToolUse += [{matcher: "", hooks: [
+      {type: "command", command: $command, timeout: 10}]}] end
   ' "$AGY_HOOKS")
   echo "$MERGED" | jq . > "$AGY_HOOKS"
   echo "  hook を登録・確認しました"

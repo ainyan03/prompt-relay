@@ -1,8 +1,9 @@
-"""Atomic tmux session idle tracking for the notification hook."""
+"""Atomic terminal group idle tracking for the notification hook."""
 
 import fcntl
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -19,9 +20,44 @@ def tmux(*args):
     return subprocess.check_output(['tmux', *args], text=True, stderr=subprocess.DEVNULL).strip()
 
 
-def context():
+def cmux_output(*args):
+    executable = (os.environ.get('CMUX_BUNDLED_CLI_PATH') or shutil.which('cmux')
+                  or '/Applications/cmux.app/Contents/Resources/bin/cmux')
+    return subprocess.check_output([executable, *args], text=True,
+                                   stderr=subprocess.DEVNULL, timeout=2)
+
+
+def cmux(*args):
+    return json.loads(cmux_output('--json', '--id-format', 'uuids', *args))
+
+
+def cmux_name(workspace):
+    for item in cmux('list-workspaces')['workspaces']:
+        if item['id'].lower() == workspace.lower():
+            return item.get('title') or ''
+    return ''
+
+
+def context(backend, check_membership=False):
+    if backend == 'cmux':
+        pane = os.environ.get('CMUX_SURFACE_ID')
+        session = os.environ.get('CMUX_WORKSPACE_ID')
+        if not pane or not session:
+            return None
+        ctx = {'pane': pane, 'session': session, 'name': '', 'backend': 'cmux'}
+        # A moved surface no longer participates in its startup workspace.
+        # Resolve the display name lazily when constructing a notification.
+        if check_membership:
+            try:
+                if pane.lower() not in live_panes(ctx):
+                    return None
+            except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass  # Failed enumeration must not drop a known context or a busy update.
+        return ctx
+    if backend != 'tmux':
+        return None
     pane = os.environ.get('TMUX_PANE')
-    if not pane:
+    if not pane or not os.environ.get('TMUX'):
         return None
     try:
         value = tmux('display-message', '-p', '-t', pane, '#{session_id}\t#{session_name}')
@@ -33,11 +69,25 @@ def context():
         return None
 
 
+def live_panes(ctx):
+    if ctx.get('backend') != 'cmux':
+        return set(tmux('list-panes', '-s', '-t', ctx['session'], '-F', '#{pane_id}').splitlines())
+    workspace = ctx['session']
+    live = set()
+    # list-pane-surfaces without --pane only includes the focused pane.
+    # Do not prune any state until all pane queries have succeeded.
+    for pane in cmux('list-panes', '--workspace', workspace)['panes']:
+        data = cmux('list-pane-surfaces', '--workspace', workspace, '--pane', pane['id'])
+        live.update(surface['id'].lower() for surface in data['surfaces'])
+    return live
+
+
 class IdleState:
     def __init__(self, ctx, host):
         self.ctx = ctx
         root = Path(os.environ.get('PROMPT_RELAY_STATE_DIR', f'/tmp/prompt-relay-state-{os.getuid()}'))
-        self.directory = root / host.encode().hex() / ctx['session'].encode().hex()
+        group = ('cmux:' if ctx.get('backend') == 'cmux' else '') + ctx['session']
+        self.directory = root / host.encode().hex() / group.encode().hex()
 
     @contextmanager
     def locked(self):
@@ -89,11 +139,12 @@ class IdleState:
             if own is not _MISSING and (own['token'] != token or own['status'] != 'idle'):
                 return False
             # A failed query is not evidence that the session has become idle.
-            live = set(tmux('list-panes', '-s', '-t', self.ctx['session'], '-F', '#{pane_id}').splitlines())
+            live = live_panes(self.ctx)
             states = []
             for path in self.directory.glob('*.json'):
                 state = self.read(path)
-                if state['pane'] not in live:
+                pane = state['pane'].lower() if self.ctx.get('backend') == 'cmux' else state['pane']
+                if pane not in live:
                     path.unlink()
                 else:
                     states.append(state)
@@ -118,8 +169,14 @@ def grace():
 
 def main():
     action = sys.argv[1]
+    if action == 'cmux-run':
+        sys.stdout.write(cmux_output(*sys.argv[2:]))
+        return 0
+    if action == 'cmux-name':
+        print(cmux_name(sys.argv[2]))
+        return 0
     if action == 'context':
-        ctx = context()
+        ctx = context(sys.argv[2], '--check-membership' in sys.argv[3:])
         if ctx:
             print(json.dumps(ctx))
         return 0
@@ -159,5 +216,5 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         sys.exit(1)

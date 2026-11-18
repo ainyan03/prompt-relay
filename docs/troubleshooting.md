@@ -16,9 +16,9 @@ ls -la /path/to/prompt-relay/hook/codex-permission-request.sh
 hooks = true
 ```
 
-Codexをtmux内で起動すると、標準TUIとスマホの両方に承認要求が表示されます。tmux外ではリモート回答を待っている間、標準の承認画面はまだ表示されません。サーバへ接続できない場合は即座に、応答がない場合は `PROMPT_RELAY_TIMEOUT`（既定120秒）の経過後に標準画面へフォールバックします。
+Codexをtmux内、またはtmuxを使わずcmuxで直接起動すると、標準TUIとスマホの両方に承認要求が表示されます。それ以外の端末ではリモート回答を待っている間、標準の承認画面はまだ表示されません。サーバへ接続できない場合は即座に、応答がない場合は `PROMPT_RELAY_TIMEOUT`（既定120秒）の経過後に標準画面へフォールバックします。
 
-Automatic approvalされた要求は、tmuxハイブリッドではTUIが表示されないためスマホにも通知されません。tmux外の直接応答モードはTUIを観測できず、この判定には対応しません。
+Automatic approvalされた要求は、tmux / cmux ハイブリッドではTUIが表示されないためスマホにも通知されません。画面操作できない端末の直接応答モードはTUIを観測できず、この判定には対応しません。
 
 ### Codexの永続goalで完了通知が繰り返される
 
@@ -209,22 +209,34 @@ curl -s -k -X POST "$PROMPT_RELAY_SERVER_URL/permission-request" \
 
 ## hook が発火しない
 
-### tmux 外で Claude Code を実行している
+### tmux / cmux の外で Claude Code を実行している
 
-**症状**: Claude Code がツール実行の承認を求めるが、フックが一切反応しない
+**症状**: 承認の回答ボタンが届かない
 
-**原因**: `permission-request.sh` は `tmux display-message` でペイン情報を取得する。tmux セッション外では取得に失敗し、即座に `exit 0` する
+**動作**: `TMUX` と `TMUX_PANE` が揃う場合は tmux、そうでなく `CMUX_SURFACE_ID` がある場合は
+cmux の画面を取得して承認を中継します。どちらも無い端末ではボタン無しの「承認待ち」通知だけを送り、回答は端末で行います。
+無関係な tmux サーバが動いていても、そのペインを操作しません。
 
 **対処法**:
-```bash
-# tmux 内にいるか確認
-tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}'
-# 出力例: main:0.0
 
-# tmux 外の場合、tmux セッション内で Claude Code を起動し直す
-tmux new-session -s claude
-# このセッション内で claude を起動
-```
+- スマホから回答するには tmux 内で起動するか、cmux で tmux を使わず直接起動してください
+- cmux の中で tmux を使うと cmux 側の操作はできず、tmux として動きます
+- cmux CLI が見つからない場合は `CMUX_BUNDLED_CLI_PATH` を指定するか、`PATH` に追加してください
+- その他の端末で通知も届かない場合は、Notification hook の matcher に `permission_prompt` が含まれるか確認してください。`setup.sh` の再実行で追加できます
+
+### cmux の CLI がソケットに接続できない
+
+**症状**: 承認待ちがボタン無し通知になる、または Codex が直接応答モードに切り替わる。
+中継中に接続を失った場合は、画面取得の連続失敗やキー送信失敗を通知し、端末での操作を求めます。
+
+cmux で tmux を使わず直接開いたシェルから、`cmux read-screen --surface "$CMUX_SURFACE_ID"` を実行して確認してください。
+cmux 側のソケット操作の許可設定と、`CMUX_BUNDLED_CLI_PATH` が指す実行ファイルを確認します。
+応答しない cmux CLI の呼び出しは 2 秒で打ち切ります。
+
+### surface を移した後に session 完了通知がまとまらない
+
+動かしたまま surface を別の workspace へ移すと、そのエージェントは session 集計から外れます。
+移した後はエージェントを再起動してください。Claude Code / Codex は個別通知に戻り、Antigravity CLI はこの場合通知しません。
 
 ### settings.json のフック設定が正しくない
 
@@ -276,7 +288,7 @@ source ~/.zshrc
 
 **症状**: アプリで承認ボタンを押したが、ターミナルにキーが入力されない。アプリに「already responded」エラーが表示される
 
-**原因**: 権限リクエストは作成から `REQUEST_TIMEOUT` 秒（デフォルト 120）でタイムアウトする。フックスクリプトのポーリングも `PROMPT_RELAY_TIMEOUT`（デフォルト 120）秒で終了するため、それ以降はサーバから応答を受け取っても `tmux send-keys` を実行するプロセスが存在しない
+**原因**: 権限リクエストは作成から `REQUEST_TIMEOUT` 秒（デフォルト 120）でタイムアウトする。フックスクリプトのポーリングも `PROMPT_RELAY_TIMEOUT`（デフォルト 120）秒で終了するため、それ以降はサーバから応答を受け取っても 端末へキーを送るプロセスが存在しない
 
 **対処法**: ターミナルで手動操作する。タイムアウト後のリクエストはアプリ側では操作不可。Claude Code のターミナル上で直接選択肢を選ぶ。
 

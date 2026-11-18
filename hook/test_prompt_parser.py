@@ -478,3 +478,150 @@ class TestCodexPermissionRequest:
 
     def test_unknown_decision(self):
         assert codex_decision('cancelled') is None
+
+
+@pytest.mark.parametrize('agent', ['claude', 'codex'])
+def test_approval_fingerprint_keeps_full_body_and_ignores_decoration(agent):
+    from prompt_parser import prompt_snapshot, prompt_matches
+    import json
+    command = 'echo ' + 'x' * 300 + ' harmless'
+    if agent == 'claude':
+        pane = '────────────────────\n☐ Bash command\n' + command + '\n❯ 1. Yes\n  2. No\nEsc to cancel'
+    else:
+        pane = 'Would you like to run the following command?\n$ ' + command + '\n› 1. Yes (y)\n  2. No (esc)'
+    snapshot = json.dumps(prompt_snapshot(agent, pane))
+    assert prompt_matches(agent, pane, snapshot)
+    assert prompt_matches(agent, pane.replace('❯ 1.', '  1.').replace('› 1.', '  1.').replace('  2.', '❯ 2.'), snapshot)
+    assert not prompt_matches(agent, pane.replace('harmless', 'rm -rf important-directory'), snapshot)
+    assert not prompt_matches(agent, pane.replace('1. Yes', '9. Yes'), snapshot)
+    if agent == 'claude':
+        assert prompt_matches(agent, '1. earlier output\n2. earlier output\n' + pane, snapshot)
+        assert prompt_matches(agent, pane.replace('─' * 20, '─' * 40), snapshot)
+
+
+def test_approval_fingerprint_preserves_command_redirection():
+    from prompt_parser import prompt_snapshot
+    base = '☐ Bash command\n  COMMAND\n❯ 1. Yes\n  2. No\nEsc to cancel'
+    assert prompt_snapshot('claude', base.replace('COMMAND', '1.txt')) != prompt_snapshot(
+        'claude', base.replace('COMMAND', '> 1.txt'))
+
+
+def test_unnumbered_codex_fingerprint_preserves_command_redirection():
+    from prompt_parser import prompt_snapshot
+    base = 'Would you like to run the following command?\nCOMMAND\nAllow / Deny'
+    assert prompt_snapshot('codex', base.replace('COMMAND', '1.txt')) != prompt_snapshot(
+        'codex', base.replace('COMMAND', '> 1.txt'))
+
+
+@pytest.mark.parametrize('agent', ['claude', 'codex'])
+def test_approval_fingerprint_ignores_whitespace_presence_and_position_by_design(agent):
+    from prompt_parser import prompt_snapshot, prompt_matches, approval_region
+    command = "python3 - <<'PY'\nif False:\n    pass\n\n    print('remove important data')\nPY"
+    if agent == 'claude':
+        pane = '☐ Bash command\n' + command + '\n❯ 1. Yes\n  2. No\nEsc to cancel'
+    else:
+        pane = 'Would you like to run the following command?\n$ ' + command + '\n› 1. Yes (y)\n  2. No (esc)'
+    snapshot = json.dumps(prompt_snapshot(agent, pane))
+    assert '\n\n    print' in approval_region(agent, pane)
+    assert prompt_matches(agent, pane.replace('    print', 'print'), snapshot)
+    assert prompt_matches(agent, pane.replace('if False:', 'ifFalse:'), snapshot)
+    assert prompt_matches(agent, pane.replace('\n\n    print', '\n    print'), snapshot)
+    assert prompt_matches(agent, '\n'.join(line + '  ' for line in pane.splitlines()), snapshot)
+
+
+def test_codex_body_heading_phrase_is_not_a_boundary():
+    from prompt_parser import prompt_snapshot, prompt_matches, approval_region
+    pane = ("Would you like to run the following command?\n  $ echo harmless\n"
+            "echo 'would you like to run'\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm")
+    snapshot = json.dumps(prompt_snapshot('codex', pane))
+    assert 'echo harmless' in approval_region('codex', pane)
+    assert not prompt_matches('codex', pane.replace('echo harmless', 'rm -rf important-directory'), snapshot)
+    ambiguous = pane.replace('  $', 'Do you want to approve another command?\n  $')
+    assert not prompt_matches('codex', ambiguous, snapshot)
+
+
+@pytest.mark.parametrize('agent', ['claude', 'codex'])
+@pytest.mark.parametrize('tail', ['\n\n❯ Type your next instruction', '\n› next', '\n> next',
+                                 '\nCommand finished.', '\n\n', '\n99% context left · ? for shortcuts',
+                                 '\n? for shortcuts'])
+def test_approval_footer_rejects_new_input_but_allows_known_status(agent, tail):
+    from prompt_parser import prompt_snapshot, prompt_matches
+    pane = ('☐ Bash command\necho harmless\n❯ 1. Yes\n  2. No\nEsc to cancel' if agent == 'claude' else
+            'Would you like to run the following command?\n$ echo harmless\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm')
+    snapshot = json.dumps(prompt_snapshot(agent, pane))
+    allowed = tail in ('\n\n', '\n99% context left · ? for shortcuts', '\n? for shortcuts') or (agent == 'codex' and tail == '\nCommand finished.')
+    detect = detect_prompt if agent == 'claude' else detect_codex_prompt
+    assert bool(detect(pane + tail)) == allowed
+    assert bool(prompt_matches(agent, pane + tail, snapshot)) == allowed
+
+
+def test_approval_region_retains_framed_blank_lines_before_fingerprinting():
+    from prompt_parser import approval_region
+    pane = '☐ Bash command\n │ if False:\n │     pass\n │ \n │     print(1)\n❯ 1. Yes\n  2. No\nEsc to cancel'
+    assert approval_region('claude', pane).splitlines()[3] == ' '
+
+
+def test_codex_heading_after_command_without_title_is_ambiguous():
+    from prompt_parser import prompt_snapshot
+    pane = '$ echo harmless\nWould you like to run the following command?\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm'
+    assert not prompt_snapshot('codex', pane)['fingerprint']
+    assert prompt_snapshot('codex', 'Command needs your approval.\n' + pane)['fingerprint']
+
+
+def test_second_dialog_after_footer_does_not_match_old_approval():
+    from prompt_parser import prompt_snapshot, prompt_matches
+    pane = 'Would you like to run the following command?\n$ echo harmless\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm'
+    assert not prompt_matches('codex', pane + '\n' + pane.replace('harmless', 'different'),
+                              json.dumps(prompt_snapshot('codex', pane)))
+
+
+def test_claude_footer_check_uses_viewport_not_previous_history():
+    from prompt_parser import prompt_snapshot, prompt_matches
+    pane = '☐ Bash command\necho harmless\n❯ 1. Yes\n  2. No\nEsc to cancel'
+    history = pane.replace('harmless', 'earlier') + '\nEarlier output\n' + pane
+    assert prompt_matches('claude', history, json.dumps(prompt_snapshot('claude', pane)), pane)
+
+
+def test_codex_footer_allows_wrapped_status_but_not_input():
+    from prompt_parser import prompt_snapshot, prompt_matches
+    pane = 'Would you like to run the following command?\n$ echo harmless\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm'
+    status = '\nExample model · Context 95% left · weekly 84% left · /workspace/\n  project · branch\n  ← for agents · ? for shortcuts'
+    snapshot = json.dumps(prompt_snapshot('codex', pane))
+    assert detect_codex_prompt(pane + status)
+    assert prompt_matches('codex', pane + status, snapshot)
+    for cursor in ('›', '❯', '>'):
+        assert not detect_codex_prompt(pane + '\n' + cursor + ' Ask anything' + status)
+        assert not prompt_matches('codex', pane + '\n' + cursor + ' Ask anything' + status, snapshot)
+
+
+def test_real_claude_dialog_with_labeled_tmux_separator():
+    from pathlib import Path
+    from prompt_parser import prompt_snapshot, prompt_matches
+    pane = (Path(__file__).parent / 'fixtures' / 'claude_permission_tmux.txt').read_text()
+    assert detect_prompt(pane)
+    assert prompt_matches('claude', pane, json.dumps(prompt_snapshot('claude', pane)))
+
+
+def test_recorded_claude_rewrap_matches_but_different_command_does_not():
+    from pathlib import Path
+    from prompt_parser import prompt_snapshot, prompt_matches
+    fixtures = Path(__file__).parent / 'fixtures'
+    registered = (fixtures / 'claude_permission_wide.txt').read_text()
+    answer = (fixtures / 'claude_permission_narrow.txt').read_text()
+    snapshot = json.dumps(prompt_snapshot('claude', registered))
+    assert detect_prompt(registered) and detect_prompt(answer)
+    assert prompt_matches('claude', answer, snapshot)
+    assert not prompt_matches('claude', answer.replace('touch ', 'rm '), snapshot)
+
+
+@pytest.mark.parametrize('agent', ['claude', 'codex'])
+def test_approval_fingerprint_accepts_midword_reflow_by_design(agent):
+    from prompt_parser import prompt_snapshot, prompt_matches
+    command = 'printf marker-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789'
+    pane = ('☐ Bash command\n' + command + '\n❯ 1. Yes\n  2. No\nEsc to cancel' if agent == 'claude' else
+            'Would you like to run the following command?\n$ ' + command + '\n› 1. Yes (y)\n  2. No (esc)\nPress enter to confirm')
+    snapshot = json.dumps(prompt_snapshot(agent, pane))
+    wrapped = pane.replace('wxyz', 'wx\nyz')
+    # Word boundaries are deliberately ignored so UI-inserted breaks still match.
+    assert prompt_matches(agent, wrapped, snapshot)
+    assert not prompt_matches(agent, wrapped.replace('yz', 'yZ'), snapshot)

@@ -6,18 +6,123 @@ permission-request.sh から呼び出される Python ロジックを集約。
 
 CLI インターフェース:
   python3 prompt_parser.py detect <pane_content>
+  python3 prompt_parser.py detect-agy <pane_content>
+  python3 prompt_parser.py agy-parse <stdin_json> <pane_content> [tmux_target] [hostname] [timeout]
   python3 prompt_parser.py parse <stdin_json> <pane_content> [tmux_target] [hostname] [timeout]
   python3 prompt_parser.py response <response_json>
   python3 prompt_parser.py codex-parse <stdin_json> [hostname] [timeout] [tmux_target] [pane_content]
   python3 prompt_parser.py codex-decision <allow|deny>
   python3 prompt_parser.py detect-codex <pane_content>
   python3 prompt_parser.py codex-choice-key <pane_content> <choice_number>
+  python3 prompt_parser.py fingerprint <claude|codex|agy> <pane_content>
+  python3 prompt_parser.py matches <claude|codex|agy> <pane_content> <snapshot_json> [visible_content]
 """
 
 import hashlib
 import json
 import re
 import sys
+
+
+def agy_dialog(pane: str) -> tuple[str, list[dict]]:
+    """Accept the observed command dialog only; reject retired or unknown forms."""
+    lines = pane.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == 'Requesting permission for:']
+    # An embedded marker can truncate the command and hide a changed prefix.
+    if len(starts) != 1:
+        return '', []
+    frame = [line.strip() for line in lines[:starts[0]] if line.strip()]
+    if len(frame) < 2 or frame[-2] != 'Command' or not re.fullmatch(r'[─━╌]+', frame[-1]):
+        return '', []
+    lines = lines[starts[0]:]
+    headings = [i for i, line in enumerate(lines) if line.strip() == 'Run this command?']
+    if len(headings) != 1 or headings[0] < 2:
+        return '', []
+    heading = headings[0]
+    if any(re.match(r'\s*Reason:', line) for line in lines[:heading]):
+        return '', []  # Reason-bearing dialogs have not been characterized.
+    choices = []
+    cursor = False
+    end = heading + 1
+    for end in range(heading + 1, len(lines)):
+        match = re.fullmatch(r'\s*(>)?\s*([1-4])\.\s+(.+?)\s*', lines[end])
+        if not match:
+            break
+        cursor |= bool(match[1])
+        choices.append({'number': int(match[2]), 'text': match[3]})
+    else:
+        return '', []  # The navigation footer is required.
+    if [c['number'] for c in choices] != [1, 2, 3, 4] or not cursor:
+        return '', []
+    # Fixed endpoint meanings are required by the allow/deny key mapping.
+    if choices[0]['text'] != 'Yes, run command' or choices[-1]['text'] != 'No, cancel':
+        return '', []
+    tail = lines[end:]
+    navigation = '↑/↓ Navigate · tab Amend · ctrl+g edit/expand command'
+    if not any(line.strip() == navigation for line in tail):
+        return '', []
+    # Reject editing-mode footers even when the command/menu are unchanged.
+    allowed = r'\s*(?:esc to cancel(?:\s.*)?|[─━╌]+)?\s*'
+    if not all(line.strip() == navigation or re.fullmatch(allowed, line) for line in tail):
+        return '', []
+    # Keep the complete body and menu, excluding transient cursor/status rows.
+    body = lines[:heading + 1]
+    body += [f"{c['number']}. {c['text']}" for c in choices]
+    return '\n'.join(body), choices
+
+
+def detect_agy_prompt(pane: str) -> bool:
+    return bool(agy_dialog(pane)[0])
+
+
+def parse_agy_request(stdin_data: str, pane_data: str, tmux_target=None,
+                      hostname=None, timeout=None) -> dict:
+    region, choices = agy_dialog(pane_data)
+    if not region:
+        raise ValueError('Unsupported agy approval screen')
+    data = json.loads(stdin_data)
+    tool = data.get('toolCall', {})
+    args = tool.get('args', {})
+    description = args.get('CommandLine')
+    # Bind the hook's displayed description to the complete screen command.
+    # A summary cannot establish identity; abbreviated screens also fail closed.
+    if not isinstance(description, str) or not description.strip():
+        raise ValueError('Missing agy command')
+    body = region.splitlines()[1:]
+    body = '\n'.join(body[:next(i for i, line in enumerate(body) if line.strip() == 'Run this command?')])
+    if re.sub(r'\s+', '', body) != re.sub(r'\s+', '', description):
+        raise ValueError('agy hook and screen commands differ')
+    result = parse_pane('{}', '', tmux_target, hostname, timeout)
+    result.update(tool_name=tool.get('name') or 'Permission', tool_input=args,
+                  header='Antigravity CLI: ' + (tool.get('name') or 'Permission'),
+                  description=description, message=description,
+                  prompt_question='Run this command?', choices=choices,
+                  has_tmux=True, can_respond=True, client='agy')
+    return result
+
+
+def approval_tail_clear(pane: str, agent: str = 'claude') -> bool:
+    """Reject a retired dialog followed by ordinary output or an input line."""
+    if agent == 'agy':
+        return detect_agy_prompt(pane)
+    lines = pane.splitlines()
+    footers = [i for i, line in enumerate(lines)
+               if re.match(r'\s*(Esc to|Enter to|Press enter)', line, re.IGNORECASE)]
+    if not footers:
+        return True  # Keep compatibility with dialog formats without a footer.
+    if agent == 'codex':
+        # Codex status/model/path rows can wrap arbitrarily. Reject only a new
+        # non-numbered input cursor below the footer; allow all other rows.
+        return not any(re.match(r'\s*[❯›>](?!\s*\d+\.)', line)
+                       for line in lines[footers[0] + 1:])
+    # Claude: below the first footer allow blanks and these known status rows:
+    # NN% context left / ? for shortcuts (optional dot-separated details).
+    # Labeled tmux separator rows are also allowed; they start and end in a rule glyph.
+    # Any other text, especially a non-numbered input cursor, fails.
+    status = r'\s*(?:\d+% context left|\? for shortcuts)(?:\s+[·•]\s+.*)?\s*'
+    separator = r'\s*[─━╌](?:.*[─━╌])?\s*'
+    return all(not line.strip() or re.fullmatch(status, line) or re.fullmatch(separator, line)
+               for line in lines[footers[0] + 1:])
 
 
 def detect_prompt(pane_text: str) -> bool:
@@ -28,6 +133,8 @@ def detect_prompt(pane_text: str) -> bool:
       2. 連番パターンに加え、❯カーソルおよび "Esc to"/"Enter to" 行の両方の存在を要求
          → テキスト中の箇条書きとの誤検出を防止
     """
+    if not approval_tail_clear(pane_text):
+        return False
     lines = pane_text.split('\n') if pane_text else []
 
     # 末尾から走査して番号付き選択肢行を収集
@@ -73,7 +180,7 @@ def detect_prompt(pane_text: str) -> bool:
 
 def detect_codex_prompt(pane_text: str) -> bool:
     """Codex TUI の承認ダイアログが可視領域にあるか判定する。"""
-    if not pane_text:
+    if not pane_text or not approval_tail_clear(pane_text, 'codex'):
         return False
     lower = pane_text.lower()
     prompt_markers = (
@@ -379,6 +486,86 @@ def codex_decision(response: str) -> dict | None:
     }
 
 
+def approval_region(agent: str, pane: str) -> str:
+    """Extract the latest approval, retaining full commands rather than UI summaries."""
+    if agent == 'agy':
+        return agy_dialog(pane)[0]
+    lines = pane.splitlines()
+    if agent == 'codex':
+        # A heading starts the block before the command/menu, never a phrase
+        # inside a command. Multiple headings before that boundary are ambiguous.
+        heading = r'\s*(?:Would you like to run|Do you want to approve|Allow codex to run)\b'
+        anchors = [i for i, line in enumerate(lines) if re.match(heading, line, re.IGNORECASE)]
+        if not anchors:
+            anchors = [i for i, line in enumerate(lines)
+                       if re.fullmatch(r'\s*[\w .:-]+needs your approval[.!]?\s*', line, re.IGNORECASE)]
+        if anchors:
+            footer = next((i for i in range(anchors[0] + 1, len(lines))
+                           if re.match(r'\s*(Esc to|Enter to|Press enter)', lines[i], re.IGNORECASE)), len(lines))
+            if any(i > footer for i in anchors):
+                return ''  # Two approval blocks cannot identify one active request.
+        if anchors and any(re.match(r'\s*\$\s', line) for line in lines[:anchors[0]]):
+            # A question below a command needs an earlier explicit title.
+            titles = [i for i in range(anchors[0])
+                      if re.fullmatch(r'\s*[\w .:-]+needs your approval[.!]?\s*', lines[i], re.IGNORECASE)]
+            if len(titles) != 1 or any(re.match(r'\s*\$\s', line) for line in lines[:titles[0]]):
+                return ''
+            anchors = titles
+        if anchors:
+            boundary = next((i for i in range(anchors[0] + 1, len(lines))
+                             if re.match(r'\s*(?:\$\s|[❯›>]?\s*\d+\.)', lines[i])), len(lines))
+            anchors = [i for i in anchors if i < boundary]
+        if len(anchors) != 1:
+            return ''
+    else:
+        anchors = [i for i, line in enumerate(lines) if re.match(r'\s*[❯>]\s*\d+\.', line)]
+    if not anchors:
+        return ''
+    anchor = anchors[-1]
+    start = anchor
+    if agent == 'claude':
+        starts = [i + 1 for i in range(anchor) if re.fullmatch(r'\s*─{10,}\s*', lines[i])]
+        headers = [i for i in range(anchor) if re.match(r'\s*[☐□]\s', lines[i])]
+        start = starts[-1] if starts else headers[-1] if headers else 0
+    elif anchor and 'needs your approval' in lines[anchor - 1].lower():
+        start -= 1
+    end = next((i for i in range(anchor + 1, len(lines))
+                if re.match(r'\s*(Esc to|Enter to|Press enter)', lines[i], re.IGNORECASE)), len(lines))
+    cursor = anchor if agent == 'claude' else -1
+    if agent == 'codex' and parse_codex_choices('\n'.join(lines[start:end])):
+        cursor = max((i for i in range(start, end)
+                      if re.match(r'\s*[❯›>]\s*\d+\.', lines[i])), default=-1)
+    normalized = []
+    for index, line in enumerate(lines[start:end], start):
+        line = line.rstrip()
+        if any(c in '─╌━' for c in line) and all(c in '─╌━│┃┌┐└┘╭╮╰╯├┤┬┴┼ ' for c in line):
+            continue
+        # Remove only a known leading frame and its one padding space. Preserve
+        # command indentation, internal whitespace, and blank lines verbatim.
+        line = re.sub(r'^([ \t]*)[│┃] ?', r'\1', line)
+        if index == cursor:
+            line = re.sub(r'^([ \t]*)[❯›>]', r'\1 ', line)
+        normalized.append(line)
+    return '\n'.join(normalized)
+
+
+def prompt_snapshot(agent: str, pane: str) -> dict:
+    region = approval_region(agent, pane)
+    # Reflow can split words. Whitespace presence and position are intentionally ignored;
+    # watcher/poller generation checks are the primary protection against stale replies.
+    canonical = re.sub(r'\s+', '', region)
+    return {'fingerprint': hashlib.sha256(canonical.encode()).hexdigest() if canonical else '',
+            'numbered_choices': bool(parse_codex_choices(region)) if agent == 'codex' else True}
+
+
+def prompt_matches(agent: str, pane: str, snapshot: str, visible: str | None = None) -> bool:
+    # Claude detection uses the viewport in the caller, never its scrollback.
+    current = prompt_snapshot(agent, pane)
+    return (approval_tail_clear(pane if visible is None else visible, agent) and bool(current['fingerprint']) and
+            (agent != 'codex' or detect_codex_prompt(pane)) and
+            current['fingerprint'] == json.loads(snapshot)['fingerprint'])
+
+
 def main():
     if len(sys.argv) < 2:
         print(f'Usage: {sys.argv[0]} <detect|parse|response> [args...]', file=sys.stderr)
@@ -386,15 +573,26 @@ def main():
 
     cmd = sys.argv[1]
 
-    if cmd == 'detect':
+    if cmd == 'fingerprint':
+        print(json.dumps(prompt_snapshot(*sys.argv[2:4])))
+
+    elif cmd == 'matches':
+        matched = prompt_matches(*sys.argv[2:6])
+        fallback = sys.argv[2] == 'codex' and not json.loads(sys.argv[4])['numbered_choices']
+        sys.exit(0 if matched else 2 if fallback else 1)
+
+    elif cmd == 'detect':
         pane = sys.argv[2] if len(sys.argv) > 2 else ''
         print('yes' if detect_prompt(pane) else 'no')
+
+    elif cmd == 'detect-agy':
+        print('yes' if detect_agy_prompt(sys.argv[2]) else 'no')
 
     elif cmd == 'detect-codex':
         pane = sys.argv[2] if len(sys.argv) > 2 else ''
         print('yes' if detect_codex_prompt(pane) else 'no')
 
-    elif cmd == 'parse':
+    elif cmd in ('parse', 'agy-parse'):
         stdin_data = sys.argv[2] if len(sys.argv) > 2 else '{}'
         pane_data = sys.argv[3] if len(sys.argv) > 3 else ''
         tmux_target = sys.argv[4] if len(sys.argv) > 4 else None
@@ -404,7 +602,8 @@ def main():
             timeout_val = int(timeout_str) if timeout_str else None
         except ValueError:
             timeout_val = None
-        result = parse_pane(stdin_data, pane_data, tmux_target, hostname, timeout_val)
+        parser = parse_agy_request if cmd == 'agy-parse' else parse_pane
+        result = parser(stdin_data, pane_data, tmux_target, hostname, timeout_val)
         print(json.dumps(result))
 
     elif cmd == 'response':

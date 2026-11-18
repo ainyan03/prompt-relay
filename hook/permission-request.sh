@@ -7,9 +7,9 @@
 # 動作原理:
 #   1. PreToolUse は各ツール実行前に発火する（権限不要のツールでも発火）
 #   2. フック本体は stdin を読み取り、バックグラウンドサブシェルを起動して即 exit 0
-#   3. バックグラウンドで tmux ペインをポーリングし、権限プロンプトの
+#   3. バックグラウンドで 端末の画面をポーリングし、権限プロンプトの
 #      出現を検出する（末尾から逆順に番号降順パターンを探索）
-#   4. 検出後、サーバへ送信し、応答をポーリングして tmux へ転送
+#   4. 検出後、サーバへ送信し、応答をポーリングして端末へ転送
 #   5. 応答送信後、再びフェーズ1に戻り次の連続プロンプトを検出する
 #
 # 排他戦略（PID 後勝ち方式、ロックなし）:
@@ -42,20 +42,28 @@
 #     }]
 #   }
 
+# Emit before sourcing common.sh, whose configuration checks can exit early.
+# agy keeps its default permission policy and can still show its approval UI.
+AGENT=claude
+if [ "$1" = --agent ] && [ "$2" = agy ]; then
+  AGENT=agy
+  printf '{"decision":"allow"}\n'
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK_LOG_AGENT=$AGENT
 source "${SCRIPT_DIR}/common.sh"
 
 TIMEOUT="${PROMPT_RELAY_TIMEOUT:-120}"
 POLL_INTERVAL=1
+# Approval can first appear two seconds after the agy hook returns.
+if [ "$AGENT" = agy ]; then
+  DETECT_ATTEMPTS="${PROMPT_RELAY_DETECT_ATTEMPTS:-50}"
+fi
 
-# 現在の tmux ペインを取得
-TMUX_PANE=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null)
-TMUX_TARGET="$TMUX_PANE"
-
-# tmux が使えない場合は何もしない
-[ -z "$TMUX_TARGET" ] && exit 0
-
-TMUX_TARGET_ID="${HOSTNAME_SHORT}:${TMUX_PANE}"
+# No screen transport is available outside tmux and cmux.
+[ -z "$TERM_TARGET_ID" ] && exit 0
+runtime_prepare || exit 0
 
 # stdin から PreToolUse データを読み取る
 INPUT=$(cat)
@@ -63,10 +71,10 @@ INPUT=$(cat)
 # バックグラウンドで全処理を実行（PreToolUse を即座に返すため）
 (
   # --- PID ファイル & 重複防止 ---
-  _SAFE_TARGET="${TMUX_TARGET//[:.]/_}"
-  WATCHER_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.watcher"
-  POLLER_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.poller"
-  SKIP_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.skip"
+  _SAFE_TARGET="${TERM_TARGET//[:.]/_}"
+  WATCHER_FILE="${PROMPT_RELAY_RUNTIME_DIR}/prompt-relay-${_SAFE_TARGET}.watcher"
+  POLLER_FILE="${PROMPT_RELAY_RUNTIME_DIR}/prompt-relay-${_SAFE_TARGET}.poller"
+  SKIP_FILE="${PROMPT_RELAY_RUNTIME_DIR}/prompt-relay-${_SAFE_TARGET}.skip"
 
   _MY_PID=$(sh -c 'echo $PPID')
 
@@ -80,31 +88,23 @@ INPUT=$(cat)
   # --- ウォッチャー登録（PID 後勝ち方式）---
   # 自身の PID を書き込み、検出ループの各イテレーションで確認する。
   # 新しいフックが PID を上書きしたら、古いフックは次のチェックで退く。
-  echo "$_MY_PID" > "$WATCHER_FILE"
+  echo "$_MY_PID" > "$WATCHER_FILE" || exit 0
 
   PARSER="${SCRIPT_DIR}/prompt_parser.py"
+  DETECT_COMMAND=detect
+  PARSE_COMMAND=parse
+  if [ "$AGENT" = agy ]; then
+    DETECT_COMMAND=detect-agy
+    PARSE_COMMAND=agy-parse
+  fi
 
   # --- プロンプト検出関数 ---
   # ロジックの詳細は prompt_parser.py の detect_prompt() を参照
   detect_prompt() {
-    /usr/bin/env python3 "$PARSER" detect "$1" 2>/dev/null
+    /usr/bin/env python3 "$PARSER" "$DETECT_COMMAND" "$1" 2>/dev/null
   }
 
   # --- ヘルパー関数 ---
-
-  # フォールバック通知
-  notify_fallback() {
-    curl -s --connect-timeout 3 -X POST "${SERVER_URL}/notify" \
-      -H "Content-Type: application/json" \
-      "${CURL_AUTH[@]}" \
-      -d "{\"title\":\"承認待ち\",\"message\":\"$1\",\"hostname\":\"${DISPLAY_HOST}\"}" > /dev/null 2>&1
-    if [ -n "$SERVER_URL_2" ]; then
-      curl -s --connect-timeout 3 -X POST "${SERVER_URL_2}/notify" \
-        -H "Content-Type: application/json" \
-        "${CURL_AUTH_2[@]}" \
-        -d "{\"title\":\"承認待ち\",\"message\":\"$1\",\"hostname\":\"${DISPLAY_HOST}\"}" > /dev/null 2>&1 &
-    fi
-  }
 
   # 両サーバにキャンセル送信
   cancel_all() {
@@ -134,7 +134,7 @@ INPUT=$(cat)
       [ "$(cat "$WATCHER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
 
       sleep $DETECT_INTERVAL
-      _RAW=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
+      _RAW=$(term_capture_wait) || exit 0
 
       if [ "$(detect_prompt "$_RAW")" = "yes" ]; then
         # 同一ペイン内容の再処理をスキップ（偽プロンプトの無限ループ防止）
@@ -148,8 +148,8 @@ INPUT=$(cat)
           continue
         fi
         # 検出成功 → パース用にスクロールバック込みで再取得
-        # -S -50: 可視領域+50行のスクロールバックを取得（プロンプトヘッダーが画面外にある場合に対応）
-        PANE_CONTENT=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -50 2>/dev/null)
+        # tmux は可視領域+50行、cmux は直近200行で画面外のヘッダーも取得する。
+        PANE_CONTENT=$(term_capture_wait history) || { notify_fallback "端末で確認してください"; exit 0; }
         break
       fi
     done
@@ -160,16 +160,18 @@ INPUT=$(cat)
     # === フェーズ2: パース＋サーバ送信（ロック不要、ウォッチャー排他で十分） ===
 
     # プロンプトが処理された可能性があるので再確認
-    _RAW_RECHECK=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
+    _RAW_RECHECK=$(term_capture_wait) || { notify_fallback "端末で確認してください"; exit 0; }
     if [ "$(detect_prompt "$_RAW_RECHECK")" != "yes" ]; then
       break
     fi
     # 再取得（フェーズ1からの間にペイン内容が変わっている可能性）
-    PANE_CONTENT=$(tmux capture-pane -t "$TMUX_TARGET" -p -S -50 2>/dev/null)
+    PANE_CONTENT=$(term_capture_wait history) || { notify_fallback "端末で確認してください"; exit 0; }
 
     # ペイン内容をパースしてサーバ送信用 JSON を構築
     # ロジックの詳細は prompt_parser.py の parse_pane() を参照
-    PAYLOAD=$(/usr/bin/env python3 "$PARSER" parse "$INPUT" "$PANE_CONTENT" "$TMUX_TARGET_ID" "${DISPLAY_HOST}" "$TIMEOUT" 2>/dev/null)
+    REGISTERED_PROMPT=$(/usr/bin/env python3 "$PARSER" fingerprint "$AGENT" "$PANE_CONTENT")
+    term_display_host
+    PAYLOAD=$(/usr/bin/env python3 "$PARSER" "$PARSE_COMMAND" "$INPUT" "$PANE_CONTENT" "$TERM_TARGET_ID" "${DISPLAY_HOST}" "$TIMEOUT" 2>/dev/null)
 
     if [ -z "$PAYLOAD" ]; then
       notify_fallback "パース失敗: 手動で確認してください"
@@ -177,6 +179,7 @@ INPUT=$(cat)
     fi
 
     # サーバにリクエスト送信（通知送信はサーバ側で非同期処理）
+    hook_log relay request
     REQUEST_ID=""
     REQUEST_ID_2=""
     RESPONSE_WITH_STATUS=$(curl -s -w "\n%{http_code}" --connect-timeout 3 -X POST "${SERVER_URL}/permission-request" \
@@ -227,7 +230,6 @@ INPUT=$(cat)
     echo "$_MY_PID" > "$POLLER_FILE"
 
     ANSWERED=false
-    SEEN_PROMPT=true  # フェーズ1で確認済み
     while [ $(date +%s) -lt $DEADLINE_EPOCH ]; do
       # ポーラーチェック: 新しいリクエストに置き換えられていたら退く
       # （サーバ側でも cancelPendingByTarget が旧リクエストをキャンセルしている）
@@ -262,36 +264,53 @@ INPUT=$(cat)
         break
       fi
 
-      # 応答あり + send_key あり → tmux にキー送信
-      if [ "$STATUS" = "ok" ] && [ -n "$SEND_KEY" ]; then
-        # send_key が数字のみであることを検証（インジェクション防止）
+      if [ "$STATUS" = "ok" ]; then
+        # Recheck after the network wait. Capture and send still race; this is
+        # not an atomic guarantee that the prompt remains unchanged.
+        [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
+        [ "$(cat "$WATCHER_FILE" 2>/dev/null)" != "$_MY_PID" ] && { cancel_all; exit 0; }
+        if ! PANE_NOW=$(term_capture_wait) || ! PANE_CONTENT=$(term_capture_wait history); then
+          notify_fallback "端末で操作してください"
+          cancel_all
+          break
+        fi
+        if [ "$(detect_prompt "$PANE_NOW")" != yes ] ||
+           ! /usr/bin/env python3 "$PARSER" matches "$AGENT" "$PANE_CONTENT" "$REGISTERED_PROMPT" "$PANE_NOW"; then
+          cancel_all
+          break
+        fi
+        if [ -z "$SEND_KEY" ]; then
+          if [ "$AGENT" = agy ]; then
+            SEND_KEY=4
+          else
+            SEND_KEY=$(echo "$PANE_NOW" | grep -oE '^\s*[0-9]+\.' | tail -1 | tr -dc '0-9')
+          fi
+        fi
+        # agy accepts exactly one numbered shortcut, with no Enter.
+        if [ "$AGENT" = agy ] && [[ ! "$SEND_KEY" =~ ^[1-4]$ ]]; then
+          cancel_all
+          break
+        fi
+        [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
+        [ "$(cat "$WATCHER_FILE" 2>/dev/null)" != "$_MY_PID" ] && { cancel_all; exit 0; }
         if echo "$SEND_KEY" | grep -qE '^[0-9]+$'; then
-          tmux send-keys -t "$TMUX_TARGET" "$SEND_KEY" 2>/dev/null
+          if term_send "$SEND_KEY"; then
+            ANSWERED=true
+          else
+            notify_fallback "端末で操作してください"
+          fi
         fi
         cancel_all
-        ANSWERED=true
         break
       fi
 
-      # 応答あり + send_key 空（deny でキー不明）→ ペインから探す
-      if [ "$STATUS" = "ok" ] && [ -z "$SEND_KEY" ]; then
-        PANE_NOW=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
-        LAST_NUM=$(echo "$PANE_NOW" | grep -oE '^\s*[0-9]+\.' | tail -1 | tr -dc '0-9')
-        # LAST_NUM が数字のみであることを検証（インジェクション防止）
-        if [ -n "$LAST_NUM" ] && echo "$LAST_NUM" | grep -qE '^[0-9]+$'; then
-          tmux send-keys -t "$TMUX_TARGET" "$LAST_NUM" 2>/dev/null
-        fi
+      # Failed reads are retried, never interpreted as a manual answer.
+      PANE_CHECK=$(term_capture_wait) || {
+        notify_fallback "端末で確認してください"
         cancel_all
-        ANSWERED=true
         break
-      fi
-
-      # tmux ペインの手動回答を検知
-      PANE_CHECK=$(tmux capture-pane -t "$TMUX_TARGET" -p 2>/dev/null)
-      if echo "$PANE_CHECK" | grep -qE '[❯>]\s*[0-9]+\.'; then
-        SEEN_PROMPT=true
-      elif [ "$SEEN_PROMPT" = "true" ]; then
-        # プロンプトが消えた → tmux 側で手動回答された
+      }
+      if [ "$(detect_prompt "$PANE_CHECK")" != yes ]; then
         cancel_all
         ANSWERED=true
         break

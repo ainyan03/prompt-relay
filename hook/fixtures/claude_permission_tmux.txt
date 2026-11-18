@@ -1,0 +1,38 @@
+  ⎿  app-android
+     app-ios
+     docker-compose.yml
+     … +49 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode
+
+⏺ Bash(C=/Applications/cmux.app/Contents/Resources/bin/cmux;
+      S=/tmp/terminal-example/session/command.log)
+  ⎿  cmux 0.65.2 (113) [12023d89f]
+     == help
+     cmux - control cmux via Unix socket
+     … +101 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode
+
+⏺ Bash(C=/Applications/cmux.app/Contents/Resources/bin/cmux; for v in CMUX_SURFACE_ID CMUX_WORKSPACE_ID CMUX_TAB_ID; do val="${(P)v}"; if [[ "$val" == "${val:u}" &&
+      "$…)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ 環境変数の ID の大文字小文字と、読み取り専用の一覧取得が通るかを確かめる
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ C=/Applications/cmux.app/Contents/Resources/bin/cmux; for v in CMUX_SURFACE_ID CMUX_WORKSPACE_ID CMUX_TAB_ID; do val="${(P)v}"; if [[ "$val" == "${val:u}" &&
+ │ "$val" != "${val:l}" ]]; then echo "$v: UPPER len=${#val}"; elif [[ "$val" == "${val:l}" ]]; then echo "$v: lower len=${#val}"; else echo "$v: mixed
+ │ len=${#val}"; fi; done; echo "=== socket-status"; $C socket-status 2>&1 | sed -E "s#/home/[^/]+#~#g" | head -20; echo "exit=$?"; echo "=== list-workspaces
+ │ (read only)"; $C --json --id-format uuids list-workspaces 2>&1 | sed -E "s#/home/[^/]+#~#g" | head -30
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Claude Code can't be sure it read this command the way the shell will, so it can't rule out a dangerous removal. Read the command, and don't go ahead if you
+ │ can't tell what it does.
+ ⚠ Claude Code will automatically block this request in 1:59, to avoid holding up an unattended session
+
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── workspace ─

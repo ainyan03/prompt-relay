@@ -2,12 +2,13 @@
 # Codex PermissionRequest hook
 #
 # auto（既定）:
-#   tmux 内では即終了し、実際に標準 TUI が表示された要求だけをスマホへ転送する。
-#   tmux 外ではスマホ応答を待ち、Codex の allow / deny JSON を直接返す。
-# direct: 常に構造化 hook 応答を返す（tmux 不要、待機中は TUI 非表示）。
-# tmux:   tmux ハイブリッドを必須とし、tmux 外では何もしない。
+#   tmux / cmux 内では即終了し、実際に標準 TUI が表示された要求だけをスマホへ転送する。
+#   画面操作できる端末の外ではスマホ応答を待ち、Codex の allow / deny JSON を直接返す。
+# direct: 常に構造化 hook 応答を返す（画面操作不要、待機中は TUI 非表示）。
+# tmux:   画面操作できる端末を必須とし、その外では何もしない。
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK_LOG_AGENT=codex
 source "${SCRIPT_DIR}/common.sh"
 
 TIMEOUT="${PROMPT_RELAY_TIMEOUT:-120}"
@@ -17,32 +18,32 @@ CODEX_MODE="${PROMPT_RELAY_CODEX_MODE:-auto}"
 PARSER="${SCRIPT_DIR}/prompt_parser.py"
 INPUT=$(cat)
 
-TMUX_PANE=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null)
-TMUX_TARGET=""
 HYBRID=false
 case "$CODEX_MODE" in
-  auto)
-    [ -n "$TMUX_PANE" ] && HYBRID=true
-    ;;
+  auto) [ -n "$TERM_TARGET_ID" ] && HYBRID=true ;;
   tmux)
-    [ -z "$TMUX_PANE" ] && exit 0
+    # Keep the mode name for compatibility; cmux also supports screen transport.
+    [ -z "$TERM_TARGET_ID" ] && exit 0
     HYBRID=true
     ;;
-  direct)
-    ;;
+  direct) ;;
   *)
     echo "[prompt-relay] WARNING: PROMPT_RELAY_CODEX_MODE は auto/direct/tmux のいずれかを指定してください" >&2
-    [ -n "$TMUX_PANE" ] && HYBRID=true
+    [ -n "$TERM_TARGET_ID" ] && HYBRID=true
     ;;
 esac
-
-if [ "$HYBRID" = "true" ]; then
-  TMUX_TARGET="$TMUX_PANE"
-  PAYLOAD_TARGET="${HOSTNAME_SHORT}:${TMUX_PANE}"
-else
-  PAYLOAD_TARGET=""
+# Probe only on a permission event, before detaching. Auto mode retains the
+# direct-response path when the cmux socket or CLI is unavailable.
+if [ "$HYBRID" = true ] && [ "$TERM_BACKEND" = cmux ]; then
+  if ! term_capture >/dev/null; then
+    [ "$CODEX_MODE" = tmux ] && exit 0
+    HYBRID=false
+  fi
 fi
+PAYLOAD_TARGET=""
+[ "$HYBRID" = true ] && PAYLOAD_TARGET="$TERM_TARGET_ID"
 
+[ "$HYBRID" = true ] || term_display_host
 PAYLOAD=$(/usr/bin/env python3 "$PARSER" codex-parse \
   "$INPUT" "$DISPLAY_HOST" "$TIMEOUT" "$PAYLOAD_TARGET" 2>/dev/null)
 [ -z "$PAYLOAD" ] && exit 0
@@ -104,12 +105,13 @@ register_requests() {
 }
 
 if [ "$HYBRID" = "true" ]; then
+  runtime_prepare || exit 0
   # hook 本体の stdout/stderr を保持すると Codex が EOF を待つため、完全に切り離す。
   (
     _SAFE_TARGET="${PAYLOAD_TARGET//[:.]/_}"
-    POLLER_FILE="/tmp/prompt-relay-${_SAFE_TARGET}.codex-poller"
+    POLLER_FILE="${PROMPT_RELAY_RUNTIME_DIR}/prompt-relay-${_SAFE_TARGET}.codex-poller"
     _MY_PID=$(sh -c 'echo $PPID')
-    echo "$_MY_PID" > "$POLLER_FILE"
+    echo "$_MY_PID" > "$POLLER_FILE" || exit 0
     trap 'if [ "$(cat "$POLLER_FILE" 2>/dev/null)" = "$_MY_PID" ]; then rm -f "$POLLER_FILE"; fi' EXIT
 
     # PermissionRequest hook の後にAutomatic approvalが実行される。実際にTUIが
@@ -119,7 +121,11 @@ if [ "$HYBRID" = "true" ]; then
     while [ "$(date +%s)" -lt "$DETECT_DEADLINE" ]; do
       [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
       # -Jで端末幅による物理折り返しを元の論理行へ戻す。
-      PANE_CONTENT=$(tmux capture-pane -J -t "$TMUX_TARGET" -p 2>/dev/null)
+      PANE_CONTENT=$(term_capture_wait joined) || {
+        notify_fallback "端末で確認してください"
+        cancel_requests
+        exit 0
+      }
       PROMPT_VISIBLE=$(/usr/bin/env python3 "$PARSER" detect-codex "$PANE_CONTENT" 2>/dev/null)
       [ "$PROMPT_VISIBLE" = "yes" ] && break
       sleep "$DETECT_INTERVAL"
@@ -130,10 +136,13 @@ if [ "$HYBRID" = "true" ]; then
 
     # 実際に表示されたTUIから選択肢を抽出する。これにより、固定のAllow/Deny
     # ではなく、Codexが表示した3択などをそのままスマホへ転送できる。
+    REGISTERED_PROMPT=$(/usr/bin/env python3 "$PARSER" fingerprint codex "$PANE_CONTENT")
+    term_display_host
     PAYLOAD=$(/usr/bin/env python3 "$PARSER" codex-parse \
       "$INPUT" "$DISPLAY_HOST" "$TIMEOUT" "$PAYLOAD_TARGET" "$PANE_CONTENT" 2>/dev/null)
     [ -z "$PAYLOAD" ] && exit 0
 
+    hook_log relay request
     register_requests
     [ -z "$REQUEST_ID" ] && [ -z "$REQUEST_ID_2" ] && exit 0
     DEADLINE_EPOCH=$(( $(date +%s) + TIMEOUT ))
@@ -141,7 +150,11 @@ if [ "$HYBRID" = "true" ]; then
     while [ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]; do
       [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
 
-      PANE_CONTENT=$(tmux capture-pane -J -t "$TMUX_TARGET" -p 2>/dev/null)
+      PANE_CONTENT=$(term_capture_wait joined) || {
+        notify_fallback "端末で確認してください"
+        cancel_requests
+        exit 0
+      }
       PROMPT_VISIBLE=$(/usr/bin/env python3 "$PARSER" detect-codex "$PANE_CONTENT" 2>/dev/null)
       if [ "$PROMPT_VISIBLE" != "yes" ]; then
         # TUI 側で先に回答された。
@@ -158,6 +171,20 @@ if [ "$HYBRID" = "true" ]; then
         exit 0
       fi
       if [ "$STATUS" = "ok" ] && [ "$PROMPT_VISIBLE" = "yes" ]; then
+        # Capture and send still race; this check is not an atomic guarantee.
+        [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
+        if ! PANE_CONTENT=$(term_capture_wait joined); then
+          notify_fallback "端末で操作してください"
+          cancel_requests
+          exit 0
+        fi
+        /usr/bin/env python3 "$PARSER" matches codex "$PANE_CONTENT" "$REGISTERED_PROMPT"
+        MATCH_STATUS=$?
+        if [ "$MATCH_STATUS" != 0 ]; then
+          [ "$MATCH_STATUS" = 2 ] && notify_fallback "端末で操作してください"
+          cancel_requests
+          exit 0
+        fi
         # サーバのsend_keyはスマホで選んだ選択肢番号。実際のTUIに表示された
         # (y)/(p)/(esc)へ変換して送る。
         TUI_KEY=""
@@ -166,24 +193,16 @@ if [ "$HYBRID" = "true" ]; then
             "$PANE_CONTENT" "$SEND_KEY" 2>/dev/null)
         fi
         case "$TUI_KEY" in
-          y|p)
-            tmux send-keys -t "$TMUX_TARGET" "$TUI_KEY" 2>/dev/null
-            ;;
-          esc)
-            tmux send-keys -t "$TMUX_TARGET" Escape 2>/dev/null
-            ;;
-          enter)
-            tmux send-keys -t "$TMUX_TARGET" Enter 2>/dev/null
-            ;;
+          y|p) ;;
+          esc) TUI_KEY=Escape ;;
+          enter) TUI_KEY=Enter ;;
           *)
-            # 旧サーバや未知のTUI形式との互換用フォールバック。
-            if [ "$DECISION" = "allow" ]; then
-              tmux send-keys -t "$TMUX_TARGET" Enter 2>/dev/null
-            else
-              tmux send-keys -t "$TMUX_TARGET" Escape 2>/dev/null
-            fi
+            # Compatibility with older responses and unknown shortcut formats.
+            if [ "$DECISION" = allow ]; then TUI_KEY=Enter; else TUI_KEY=Escape; fi
             ;;
         esac
+        [ "$(cat "$POLLER_FILE" 2>/dev/null)" != "$_MY_PID" ] && exit 0
+        term_send "$TUI_KEY" || notify_fallback "端末で操作してください"
         cancel_requests
         exit 0
       fi
@@ -197,7 +216,8 @@ if [ "$HYBRID" = "true" ]; then
   exit 0
 fi
 
-# tmux 外の直接応答モード。Codex はこの hook の終了まで標準 UI を表示しない。
+# 画面操作できる端末の外の直接応答モード。Codex はこの hook の終了まで標準 UI を表示しない。
+hook_log direct_request waiting
 register_requests
 [ -z "$REQUEST_ID" ] && [ -z "$REQUEST_ID_2" ] && exit 0
 DEADLINE_EPOCH=$(( $(date +%s) + TIMEOUT ))
@@ -212,6 +232,9 @@ while [ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]; do
   fi
   if [ "$STATUS" = "ok" ]; then
     /usr/bin/env python3 "$PARSER" codex-decision "$DECISION"
+    if [ "$?" = 0 ]; then
+      case "$DECISION" in allow|deny) hook_log direct_response "$DECISION" ;; esac
+    fi
     exit 0
   fi
   sleep "$POLL_INTERVAL"

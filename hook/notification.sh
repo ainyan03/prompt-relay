@@ -47,13 +47,15 @@ if [ "$1" = "--idle-worker" ]; then
 fi
 
 IDLE_CONTEXT=""
-if [ "${PROMPT_RELAY_IDLE_SCOPE:-pane}" = "session" ]; then
-  IDLE_CONTEXT=$(/usr/bin/env python3 "${SCRIPT_DIR}/idle_state.py" context 2>/dev/null)
-fi
+idle_context() {
+  [ "${PROMPT_RELAY_IDLE_SCOPE:-pane}" = session ] || return 0
+  /usr/bin/env python3 "${SCRIPT_DIR}/idle_state.py" context "$TERM_BACKEND" "$@" 2>/dev/null
+}
 
 # PreInvocation runs on every model invocation. Avoid reading/parsing stdin,
 # constructing notification payloads, or rewriting an already busy state.
 if [ "$AGENT" = "agy" ]; then
+  IDLE_CONTEXT=$(idle_context)
   [ -z "$IDLE_CONTEXT" ] && exit 0
   case "$AGENT_EVENT" in
     PreInvocation)
@@ -65,12 +67,8 @@ if [ "$AGENT" = "agy" ]; then
   esac
 fi
 
-# tmux ペイン識別子（collapse-id 用）
-TMUX_PANE=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null)
-TMUX_TARGET_ID=""
-if [ -n "$TMUX_PANE" ]; then
-  TMUX_TARGET_ID="${HOSTNAME_SHORT}:${TMUX_PANE}"
-fi
+# Keep the wire field name for compatibility with existing servers.
+TMUX_TARGET_ID="$TERM_TARGET_ID"
 
 if [ "$AGENT" = "agy" ]; then
   HOOK_EVENT="$AGENT_EVENT"
@@ -82,8 +80,8 @@ INPUT=$(cat) # stdin から Notification フックの JSON データを読み取
 
 # イベント種別を判定（idle_prompt / permission_prompt 等）
 # 種別フィールドは Claude Code のバージョンにより異なるため複数候補を参照する。
-# いずれも無い場合は、本フックが matcher "idle_prompt" で登録されている前提で
-# idle_prompt とみなす（JSON パース失敗時のみ空を返して送信を抑止）。
+# 種別が無い古い入力は互換性のため idle_prompt とみなす。現在の登録は
+# permission_prompt も含むため、承認待ちの区別には種別フィールドが必要。
 HOOK_EVENT=$(/usr/bin/env python3 -c "
 import sys, json
 try:
@@ -100,6 +98,15 @@ print(event or d.get('notification_type') or d.get('tool_name') or 'idle_prompt'
 
 fi
 
+# Stop and individual idle notifications check membership; busy events record their IDs
+# even if terminal enumeration would fail.
+if [ "$HOOK_EVENT" = Stop ] || [ "$HOOK_EVENT" = idle_prompt ]; then
+  IDLE_CONTEXT=$(idle_context --check-membership)
+else
+  IDLE_CONTEXT=$(idle_context)
+fi
+[ "$AGENT" = agy ] && [ -z "$IDLE_CONTEXT" ] && exit 0
+
 # Claude Stop is explicitly tagged; untagged Stop retains Codex compatibility.
 if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
   if [ -n "$IDLE_CONTEXT" ]; then
@@ -108,6 +115,7 @@ if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
   exit 0
 fi
 if [ "$HOOK_EVENT" = "Stop" ] && [ "$AGENT" = "claude" ] && [ -z "$IDLE_CONTEXT" ]; then
+  # Individual Claude completion is delivered once, by idle_prompt.
   exit 0
 fi
 if [ -n "$IDLE_CONTEXT" ] && [ "$AGENT" != "agy" ]; then
@@ -133,17 +141,25 @@ except Exception:
 fi
 
 EVENT_ID=""
-if [ -z "$HOOK_EVENT" ] || [ "$HOOK_EVENT" = "permission_prompt" ]; then
-  # permission_prompt は permission-request.sh で処理されるため、ここでは無視
-  # /notify は category なしでボタンなし通知になり、承認操作ができない
+if [ -z "$HOOK_EVENT" ]; then
   # HOOK_EVENT が空の場合は JSON パース失敗のため送信しない
   exit 0
+elif [ "$HOOK_EVENT" = "permission_prompt" ]; then
+  # Screen transports already relay this request through permission-request.sh.
+  case "$TERM_BACKEND" in
+    tmux) [ -n "$TERM_TARGET_ID" ] && exit 0 ;;
+    cmux) term_capture >/dev/null && exit 0 ;;
+  esac
+  HOOK_LOG_AGENT=${AGENT:-claude}
+  hook_log notify_only permission_prompt
+  TITLE="承認待ち"
+  MESSAGE="手動で確認してください"
 elif [ "$HOOK_EVENT" = "idle_prompt" ]; then
   TITLE="Done"
   MESSAGE="処理が完了しました"
 elif [ "$HOOK_EVENT" = "Stop" ] && { [ "$AGENT" = "claude" ] || [ "$AGENT" = "agy" ]; }; then
   TITLE="Done"
-  MESSAGE="全エージェントの処理が完了しました"
+  MESSAGE="処理が完了しました"
 elif [ "$HOOK_EVENT" = "Stop" ]; then
   # Stop は「タスク全体」ではなく1ターンの終了時に発火する。Codexの
   # 公開 thread/goal/get API で永続goalを確認し、中間ターンは通知しない。
@@ -217,10 +233,11 @@ if [ -n "$IDLE_CONTEXT" ] && [ "$HOOK_EVENT" = "Stop" ]; then
   esac
   IDLE_TOKEN=$(/usr/bin/env python3 "${SCRIPT_DIR}/idle_state.py" idle "$IDLE_CONTEXT" "$HOSTNAME_SHORT" 2>/dev/null)
   [ -z "$IDLE_TOKEN" ] && exit 0
-  TMUX_TARGET_ID=$(/usr/bin/env python3 -c 'import json,sys; print(sys.argv[2] + ":" + json.loads(sys.argv[1])["name"])' "$IDLE_CONTEXT" "$HOSTNAME_SHORT")
+  TMUX_TARGET_ID=$(/usr/bin/env python3 -c 'import json,sys; ctx=json.loads(sys.argv[1]); print(sys.argv[2] + (":cmux:" + ctx["session"] if ctx.get("backend") == "cmux" else ":" + ctx["name"]))' "$IDLE_CONTEXT" "$HOSTNAME_SHORT")
 fi
 
 # JSON エスケープを Python で安全に構築
+term_display_host
 NOTIFY_BODY=$(/usr/bin/env python3 -c "
 import json,sys
 print(json.dumps({

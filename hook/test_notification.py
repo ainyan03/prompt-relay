@@ -44,7 +44,8 @@ def run_stop_hook(tmp_path, goal, *, codex_exists=True):
     codex = make_fake_codex(tmp_path, goal) if codex_exists else tmp_path / "missing-codex"
     capture = tmp_path / "curl.json"
     # 実行者のシェルの PROMPT_RELAY_* (例: IDLE_SCOPE=session) を持ち込まない
-    env = {k: v for k, v in os.environ.items() if not k.startswith("PROMPT_RELAY_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PROMPT_RELAY_")
+           or k in ('PROMPT_RELAY_RUNTIME_DIR', 'PROMPT_RELAY_LOG')}
     env.update({
         "PATH": f"{tmp_path}:{env['PATH']}",
         "PROMPT_RELAY_API_KEY": "test-key",
@@ -120,10 +121,17 @@ def idle_env(tmp_path):
         'from pathlib import Path\n'
         'if os.environ.get("TMUX_FAIL"): sys.exit(1)\n'
         'if sys.argv[1] == "list-panes": print(Path(os.environ["TMUX_LIVE_PANES_FILE"]).read_text())\n'
+        'elif "#{pane_pid}" in sys.argv[-1]: print("424242 /dev/ttys001" if "#{pane_tty}" in sys.argv[-1] else "424242")\n'
         'elif "#{session_id}" in sys.argv[-1]: print("$1\\tteam")\n'
         'else: print("team")\n'
     )
     tmux.chmod(0o755)
+    ps = tmp_path / 'ps'
+    ps.write_text('#!/usr/bin/env python3\nimport os\n'
+                  'print(os.environ["TEST_HOOK_PID"], 424242, "ttys001 /bin/bash")\n'
+                  'print(424242, 1, "ttys001 /bin/bash")\n')
+    ps.chmod(0o755)
+    (tmp_path / 'bash-env').write_text('export TEST_HOOK_PID=$$\n')
     curl = tmp_path / 'curl'
     curl.write_text(
         '#!/usr/bin/env python3\n'
@@ -134,9 +142,11 @@ def idle_env(tmp_path):
     curl.chmod(0o755)
     live_panes = tmp_path / 'live-panes'
     live_panes.write_text('%1\n%2\n')
-    env = {k: v for k, v in os.environ.items() if not k.startswith('PROMPT_RELAY_')}
+    env = {k: v for k, v in os.environ.items() if not k.startswith('PROMPT_RELAY_')
+           or k in ('PROMPT_RELAY_RUNTIME_DIR', 'PROMPT_RELAY_LOG')}
     env.update({
         'TMUX_LIVE_PANES_FILE': str(live_panes),
+        'BASH_ENV': str(tmp_path / 'bash-env'),
         'PATH': f'{tmp_path}:{env["PATH"]}',
         'PROMPT_RELAY_API_KEY': 'test-key',
         'PROMPT_RELAY_SERVER_URL': 'http://relay.test',
@@ -147,6 +157,7 @@ def idle_env(tmp_path):
         'PROMPT_RELAY_CODEX_GOAL_AWARE': 'false',
         'CURL_CAPTURE': str(tmp_path / 'notifications'),
         'TMUX_PANE': '%1',
+        'TMUX': '/tmp/fake-tmux,1,0',
         'PROMPT_RELAY_CONFIG': str(tmp_path / 'missing-config'),
     })
     return env

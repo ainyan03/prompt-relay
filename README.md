@@ -2,14 +2,14 @@
 
 > **⚠ 本ツールは LAN / VPN / Tailscale 等の信頼できるネットワーク内での利用を前提としています。インターネットに直接公開するサーバでの運用は想定していません。** 詳しくは [SECURITY.md](SECURITY.md) を参照してください。
 
-Claude Code / Codex の承認待ちをスマホで操作するためのツールです。
+Claude Code / Codex / Antigravity CLI の承認待ちをスマホで操作するためのツールです。
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) と [Codex](https://developers.openai.com/codex/) は、ファイル変更やコマンド実行前にユーザーへ承認を求めることがあります。prompt-relay を使うと、この承認操作をスマートフォンからリモートで行えます。
 
 ## できること
 
-- Claude Code / Codex が承認待ちになるとスマホにプッシュ通知
-- 通知から承認・拒否を選択すると Claude Code / Codex に自動反映
+- Claude Code / Codex / Antigravity CLI が承認待ちになるとスマホにプッシュ通知
+- 通知から承認・拒否を選択するとエージェントに自動反映
 - プランモード等で連続する承認プロンプトにも対応（自動で次のプロンプトを検出）
 - 処理完了時にも通知でお知らせ
 - **複数エージェントの完了通知をまとめる**: 1 つの tmux セッションで複数のエージェントを動かすとき、全員が待機したときだけ 1 回通知（Claude Code / Codex / Antigravity CLI、設定で有効化）
@@ -28,6 +28,7 @@ Claude Code / Codex の承認待ちをスマホで操作するためのツール
 
 - Claude Code を使う場合: tmux 上で実行する環境
 - Codex を使う場合: lifecycle hooks 対応版。TUIとスマホを併用する場合はtmux
+- Antigravity CLI を使う場合: tmux または cmux 上で実行する環境（コマンド承認に対応）
 - Python 3（フックスクリプトのプロンプト検出・パースに使用）
 - Node.js サーバ（ローカルまたは LAN 内、Docker 対応）
 - Android アプリを使う場合: Android 8.0 以上
@@ -39,7 +40,7 @@ Claude Code / Codex の承認待ちをスマホで操作するためのツール
 Claude Code / Codex (権限プロンプト / ターン・goal完了)
     │
     ▼
-hook/permission-request.sh  ── PreToolUse で発火、tmux 画面をパースしてサーバへ転送
+hook/permission-request.sh  ── Claude Code / Antigravity CLI の PreToolUse で発火、端末画面をパースして転送
 hook/codex-permission-request.sh ── PermissionRequest の構造化データと応答を中継
 hook/notification.sh        ── ターン完了・Codex goal状態の通知を送信
 hook/idle_state.py          ── session モードで各エージェントの作業中/待機を記録し、全員の待機を判定
@@ -89,7 +90,7 @@ cd ~/prompt-relay
 |---|---|
 | [サーバセットアップ](docs/setup-server.md) | Node.js サーバ、.env 設定、API 認証、Docker デプロイ、マルチホスト・デュアルサーバ構成 |
 | [Claude Code フック設定](docs/setup-hooks.md) | settings.json の設定、フックの動作原理 |
-| [Codex フック設定](docs/setup-codex.md) | hooks.json の設定、PermissionRequest の動作原理 |
+| [Codex フック設定](docs/setup-codex.md) | hooks.json の設定、承認画面の中継に必要な `--no-daemon` 起動、PermissionRequest の動作原理 |
 | [複数エージェントの完了通知](docs/session-idle.md) | session モード（tmux セッション内の全エージェントの待機で 1 回通知）、Antigravity CLI の登録 |
 | [PWA（ブラウザ）](docs/setup-pwa.md) | HTTPS 証明書、PWA インストール（Android / iOS / Tailscale） |
 | [iOS アプリ](docs/setup-ios.md) | Apple Developer Portal 設定、Xcode ビルド |
@@ -103,6 +104,8 @@ cd ~/prompt-relay
 prompt-relay は Claude Code / Codex の標準承認操作を**補完する**ツールです。**標準操作の置き換えが目的ではありません**。
 
 ### フェイルセーフ設計
+
+Antigravity CLI は tmux / cmux 内の `Run this command?` 画面の4選択肢を中継します。URL・ツール呼び出し・`Reason:` 付きの承認画面は中継しません。設定は [フック設定](docs/setup-hooks.md#antigravity-cli-の承認中継) を参照してください。
 
 Claude Code では `PreToolUse` フックとtmuxの画面検出を使用します。Codexはtmux内で起動すると、`PermissionRequest` hookが要求だけを登録して即終了するため、標準TUIとスマホの両方から回答できます。Codex TUIに3択以上が表示された場合も、各選択肢の文言をスマホへ転送し、選択結果を対応するTUIショートカットへ変換します。tmux外では構造化された `allow` / `deny` をhookから直接返します。
 
