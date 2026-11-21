@@ -38,6 +38,46 @@ def cmux_name(workspace):
     return ''
 
 
+def terminal_output(backend, *args):
+    if backend not in ('herdr', 'hc'):
+        raise ValueError('unsupported terminal')
+    executable = backend
+    bundled = os.environ.get('HERDR_BIN_PATH', '')
+    if backend == 'herdr' and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+        executable = bundled
+    return subprocess.check_output([executable, *args], text=True,
+                                   stderr=subprocess.DEVNULL, timeout=2)
+
+
+def terminal_owner(backend, target):
+    if backend == 'herdr':
+        data = json.loads(terminal_output(backend, 'pane', 'process-info', '--pane', target))
+        pid = data['result']['process_info']['shell_pid']
+    else:
+        data = json.loads(terminal_output(backend, 'get', target, '--json'))
+        if data['state'] != 'live':
+            raise ValueError('terminal is not live')
+        pid = data['pid']
+    if type(pid) is not int or pid <= 1:
+        raise ValueError('invalid shell pid')
+    return pid
+
+
+def terminal_name(backend, target):
+    if backend == 'hc':
+        data = json.loads(terminal_output(backend, 'get', target, '--json'))
+        return data.get('labels', {}).get('where') or ''
+    workspace = os.environ.get('HERDR_WORKSPACE_ID', '')
+    if not workspace:
+        return ''
+    try:
+        data = json.loads(terminal_output(backend, 'workspace', 'get', workspace))
+        return data['result']['workspace'].get('label') or workspace
+    except (OSError, ValueError, KeyError, TypeError, AttributeError,
+            subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return workspace
+
+
 def context(backend, check_membership=False):
     if backend == 'cmux':
         pane = os.environ.get('CMUX_SURFACE_ID')
@@ -169,6 +209,15 @@ def grace():
 
 def main():
     action = sys.argv[1]
+    if action == 'terminal-run':
+        sys.stdout.write(terminal_output(sys.argv[2], *sys.argv[3:]))
+        return 0
+    if action == 'terminal-owner':
+        print(terminal_owner(sys.argv[2], sys.argv[3]))
+        return 0
+    if action == 'terminal-name':
+        print(terminal_name(sys.argv[2], sys.argv[3]))
+        return 0
     if action == 'cmux-run':
         sys.stdout.write(cmux_output(*sys.argv[2:]))
         return 0
@@ -216,5 +265,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError,
+            subprocess.CalledProcessError, subprocess.TimeoutExpired):
         sys.exit(1)

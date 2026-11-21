@@ -209,20 +209,33 @@ curl -s -k -X POST "$PROMPT_RELAY_SERVER_URL/permission-request" \
 
 ## hook が発火しない
 
-### tmux / cmux の外で Claude Code を実行している
+### 対応端末の外で Claude Code を実行している
 
 **症状**: 承認の回答ボタンが届かない
 
-**動作**: `TMUX` と `TMUX_PANE` が揃う場合は tmux、そうでなく `CMUX_SURFACE_ID` がある場合は
-cmux の画面を取得して承認を中継します。どちらも無い端末ではボタン無しの「承認待ち」通知だけを送り、回答は端末で行います。
+**動作**: `TMUX` と `TMUX_PANE` が揃う場合は tmux を優先します。tmux が検証に失敗した場合や
+`TMUX` が無い場合は、herdr TUI（`HERDR_ENV=1` と `HERDR_PANE_ID`）、
+herdr アプリ（`HC_TERMINAL_ID`）の順に検証します。cmux（`CMUX_SURFACE_ID`）は `TMUX` と
+herdr / hc の環境変数がない場合だけ使い、herdr の検証失敗時には外側へ中継しません。
+該当しない端末ではボタン無しの「承認待ち」通知だけを送り、回答は端末で行います。
 無関係な tmux サーバが動いていても、そのペインを操作しません。
 
 **対処法**:
 
-- スマホから回答するには tmux 内で起動するか、cmux で tmux を使わず直接起動してください
-- cmux の中で tmux を使うと cmux 側の操作はできず、tmux として動きます
+- スマホから回答するには tmux 内で起動するか、herdr / cmux で tmux を使わず直接起動してください
+- herdr / cmux の中で tmux を使うと tmux として動きます
+- herdr TUI は実行可能な `HERDR_BIN_PATH` を指定するか `herdr` を `PATH` に、アプリ版は `hc` を `PATH` に追加してください
 - cmux CLI が見つからない場合は `CMUX_BUNDLED_CLI_PATH` を指定するか、`PATH` に追加してください
 - その他の端末で通知も届かない場合は、Notification hook の matcher に `permission_prompt` が含まれるか確認してください。`setup.sh` の再実行で追加できます
+
+hook.log の backend は TUI 版が `herdr`、アプリ版が `hc` です。`herdr_query_failed` /
+`hc_query_failed` は CLI の失敗・2 秒の時間切れ・不正な JSON・PID や TTY の取得失敗を示します。
+アプリ版の端末が `live` 以外の場合も `hc_query_failed` になります。
+`invalid_endpoint` は宛先 ID がローカル端末の形式に合わず、照会前に拒否されたことを示します。
+`pane_not_ancestor` は画面のシェルが hook の祖先に居ない、`tty_mismatch` は最も近い制御端末が
+一致しない、`daemon` は制御端末のない Codex 常駐サービスを経由したことを示します。
+回答前に宛先の PID / TTY が変わると `send_cancelled` に `pane_pid_changed` /
+`pane_tty_changed` を記録し、キーを送りません。再照会に失敗した場合も送信を中止します。
 
 ### cmux の CLI がソケットに接続できない
 

@@ -61,7 +61,7 @@ if [ "$AGENT" = agy ]; then
   DETECT_ATTEMPTS="${PROMPT_RELAY_DETECT_ATTEMPTS:-50}"
 fi
 
-# No screen transport is available outside tmux and cmux.
+# Unsupported terminals have no screen transport.
 [ -z "$TERM_TARGET_ID" ] && exit 0
 runtime_prepare || exit 0
 
@@ -148,7 +148,7 @@ INPUT=$(cat)
           continue
         fi
         # 検出成功 → パース用にスクロールバック込みで再取得
-        # tmux は可視領域+50行、cmux は直近200行で画面外のヘッダーも取得する。
+        # tmux は可視領域+50行、他の端末は直近200行で画面外のヘッダーも取得する。
         PANE_CONTENT=$(term_capture_wait history) || { notify_fallback "端末で確認してください"; exit 0; }
         break
       fi

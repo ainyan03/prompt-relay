@@ -2,7 +2,7 @@
 # Codex PermissionRequest hook
 #
 # auto（既定）:
-#   tmux / cmux 内では即終了し、実際に標準 TUI が表示された要求だけをスマホへ転送する。
+#   対応端末内では即終了し、実際に標準 TUI が表示された要求だけをスマホへ転送する。
 #   画面操作できる端末の外ではスマホ応答を待ち、Codex の allow / deny JSON を直接返す。
 # direct: 常に構造化 hook 応答を返す（画面操作不要、待機中は TUI 非表示）。
 # tmux:   画面操作できる端末を必須とし、その外では何もしない。
@@ -22,7 +22,7 @@ HYBRID=false
 case "$CODEX_MODE" in
   auto) [ -n "$TERM_TARGET_ID" ] && HYBRID=true ;;
   tmux)
-    # Keep the mode name for compatibility; cmux also supports screen transport.
+    # Keep the mode name for compatibility with all supported screen transports.
     [ -z "$TERM_TARGET_ID" ] && exit 0
     HYBRID=true
     ;;
@@ -33,8 +33,8 @@ case "$CODEX_MODE" in
     ;;
 esac
 # Probe only on a permission event, before detaching. Auto mode retains the
-# direct-response path when the cmux socket or CLI is unavailable.
-if [ "$HYBRID" = true ] && [ "$TERM_BACKEND" = cmux ]; then
+# direct-response path when a terminal socket or CLI is unavailable.
+if [ "$HYBRID" = true ] && [ "$TERM_BACKEND" != tmux ]; then
   if ! term_capture >/dev/null; then
     [ "$CODEX_MODE" = tmux ] && exit 0
     HYBRID=false

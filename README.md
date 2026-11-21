@@ -26,9 +26,9 @@ Claude Code / Codex / Antigravity CLI の承認待ちをスマホで操作する
 
 ## 必要なもの
 
-- Claude Code を使う場合: tmux 上で実行する環境
-- Codex を使う場合: lifecycle hooks 対応版。TUIとスマホを併用する場合はtmux
-- Antigravity CLI を使う場合: tmux または cmux 上で実行する環境（コマンド承認に対応）
+- Claude Code を使う場合: tmux / herdr（TUI / アプリ）/ cmux 上で実行する環境
+- Codex を使う場合: lifecycle hooks 対応版。TUIとスマホを併用する場合はtmux / herdr（TUI / アプリ）/ cmux
+- Antigravity CLI を使う場合: tmux / herdr（TUI / アプリ）/ cmux 上で実行する環境（コマンド承認に対応）
 - Python 3（フックスクリプトのプロンプト検出・パースに使用）
 - Node.js サーバ（ローカルまたは LAN 内、Docker 対応）
 - Android アプリを使う場合: Android 8.0 以上
@@ -55,7 +55,7 @@ hook/idle_state.py          ── session モードで各エージェントの�
 Server へ応答を返送（先に応答した方を採用）
     │
     ▼
-Claude: tmux send-keys / Codex: tmux内はTUIへ入力、tmux外はhookのdecisionを返却
+対応端末内: TUIへキー入力 / Codexの直接応答: hookのdecisionを返却
 ```
 
 ## クイックセットアップ

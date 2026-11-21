@@ -1,0 +1,14 @@
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: example.org への ping を1回実行してよいですか？
+
+  $ ping -c 1 example.org
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `ping -c 1 example.org` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

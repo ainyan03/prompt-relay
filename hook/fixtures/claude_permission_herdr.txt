@@ -1,0 +1,22 @@
+─────────────────────────────────
+ Bash command
+ Tip: auto mode handles these
+ prompts for you — choose
+ "switch to auto mode" below
+ Create the probe marker file in
+ /tmp
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch
+ /tmp/herdr-tui-probe-marker.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow
+      access to /tmp from this
+      project
+   3. Yes, and switch to auto
+      mode · auto mode handles
+      these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

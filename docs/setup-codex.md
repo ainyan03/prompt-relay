@@ -1,6 +1,6 @@
 # Codex フック設定
 
-Codex は `PermissionRequest` lifecycle hook から構造化された承認要求を受け取れます。prompt-relayは実行環境に応じて、標準TUIとスマホを併用するtmux / cmuxハイブリッド、または構造化hook応答を使う直接応答を自動選択します。
+Codex は `PermissionRequest` lifecycle hook から構造化された承認要求を受け取れます。prompt-relayは実行環境に応じて、標準TUIとスマホを併用するtmux / herdr / cmuxハイブリッド、または構造化hook応答を使う直接応答を自動選択します。
 
 ## 自動セットアップ
 
@@ -54,8 +54,8 @@ chmod +x hook/codex-permission-request.sh hook/notification.sh
 
 ## 推奨: TUIとスマホを併用する
 
-Codexをtmux内で起動するか、cmuxでtmuxを使わず直接起動します。
-cmuxの中でtmuxを使うとcmux側の操作はできず、tmuxとして動きます。
+Codexをtmux内で起動するか、herdr（TUI / アプリ）やcmuxでtmuxを使わず直接起動します。
+herdr / cmuxの中でtmuxを使うとtmuxとして動きます。
 
 ```bash
 tmux new-session -s codex
@@ -64,15 +64,15 @@ codex --no-daemon
 
 素の `codex` は共有の常駐サービス経由で動作する場合があり、その場合は hook に
 呼び出し元の端末情報が届きません。常駐サービスが起動元の `TMUX_PANE` を引き継いでも、
-そのペインのプロセスが hook の祖先でなければキーを送りません。tmux / cmux とも、祖先に
+そのペインのプロセスが hook の祖先でなければキーを送りません。tmux / herdr / cmux とも、祖先に
 制御端末のない `codex` 実行ファイルのプロセスがある場合や、制御端末を持つ祖先が1つもない場合は画面操作を無効化します。`auto` モードでは、スマホの回答を
-hook が直接返す形になります。プロセス情報や tmux の問い合わせに失敗した場合も画面操作しません。
-tmux では回答を送る直前にペインのプロセス番号と端末を取り直し、確認時と違えば送りません。
+hook が直接返す形になります。プロセス情報や宛先の問い合わせに失敗した場合も画面操作しません。
+tmux / herdr では回答を送る直前にペインのプロセス番号と端末を取り直し、確認時と違えば送りません。
 既知の制約: 回答を待つ間にペインが作り直され、プロセス番号と端末の番号が両方とも同じ値で再利用され、
 同じ承認画面が出ている場合は区別できません。cmux には surface とプロセスを結ぶ手段が無いため、
 祖先の確認は常駐サービスの判定だけです。
 
-tmux / cmux で承認画面への中継を使う場合は `--no-daemon` を付けて起動してください。
+tmux / herdr / cmux で承認画面への中継を使う場合は `--no-daemon` を付けて起動してください。
 引き換えに、画面を閉じた後もスレッドを続行する機能など、共有の常駐サービスに依存する機能が使えなくなります。
 必要なら、シェルの設定へ次の関数を手動で追加できます。引数なし・オプションだけ・最初の指示付き・
 `resume` / `fork` の対話起動にだけ付加します（サブコマンドの一覧は `codex --help` に合わせてください）。値を取る未列挙のオプションは `--名前=値` 形式で指定してください。
@@ -94,7 +94,7 @@ codex() {
       *) break ;;  # 最初の指示を付けた対話起動
     esac
   done
-  if [ "$interactive" = yes ] && [ -n "${TMUX:-}${CMUX_SURFACE_ID:-}" ]; then
+  if [ "$interactive" = yes ] && [ -n "${TMUX:-}${CMUX_SURFACE_ID:-}${HERDR_ENV:-}${HC_TERMINAL_ID:-}" ]; then
     command codex --no-daemon "$@"
   else
     command codex "$@"
@@ -105,7 +105,7 @@ codex() {
 `--no-daemon` はサブコマンドより前に置きます。`codex exec --no-daemon` は受け付けられないため、
 この関数は `exec` などのサブコマンドへオプションを追加しません。`setup.sh` はこの関数を自動登録しません。
 
-既定の `auto` モードはtmux / cmuxを検出すると、次のように動作します。
+既定の `auto` モードはtmux / herdr / cmuxを検出すると、次のように動作します。
 
 1. `PermissionRequest` hookはポーラーをバックグラウンド化し、決定を返さず即終了
 2. Automatic approvalで承認された場合は、TUIもスマホ通知も表示しない

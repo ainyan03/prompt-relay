@@ -1,7 +1,7 @@
 # Claude Code / Antigravity CLI フック設定
 
 Codex の設定は [Codex フック設定](setup-codex.md) を参照してください。
-tmux / cmux で Codex の承認画面へ回答を中継するには、[起動時の `--no-daemon` の設定](setup-codex.md#推奨-tuiとスマホを併用する)も必要です。
+tmux / herdr / cmux で Codex の承認画面へ回答を中継するには、[起動時の `--no-daemon` の設定](setup-codex.md#推奨-tuiとスマホを併用する)も必要です。
 
 ## settings.json の設定
 
@@ -48,13 +48,27 @@ chmod +x hook/permission-request.sh hook/notification.sh
 | 起動環境 | Claude Code の承認 | 完了通知の session モード |
 |---|---|---|
 | tmux | 画面を検出し、スマホの回答をキー入力で転送 | tmux セッション単位 |
+| herdr（TUI 版） | 同上 | ペイン単位（session 指定時も同じ） |
+| herdr（アプリ版、hc） | 同上 | 端末単位（session 指定時も同じ） |
 | cmux（tmux を使わず直接起動） | 画面を検出し、スマホの回答をキー入力で転送 | cmux workspace 単位 |
 | その他（Terminal.app 等） | 「承認待ち」の通知のみ。回答は端末で操作 | エージェントごと |
 
-端末は環境変数で自動判別します。`TMUX` と `TMUX_PANE` が揃えば tmux を優先し、
-`TMUX` が無く `CMUX_SURFACE_ID` があれば cmux、それ以外は画面操作を行いません。
-`TMUX` だけが残ってペインを特定できない場合も、cmux 側へ入力しません。
-cmux の中で tmux を使うと cmux 側の操作はできず、tmux として動きます。
+端末は環境変数で自動判別します。`TMUX` と `TMUX_PANE` が揃えば tmux を優先します。
+tmux の検証に失敗した場合、または `TMUX` が無い場合は、`HERDR_ENV=1` と `HERDR_PANE_ID` による
+herdr（TUI）、`HC_TERMINAL_ID` による herdr（アプリ）の順に検証し、通った最初の宛先を使います。
+tmux / herdr はシェルの PID と呼び出し元の祖先・制御端末が一致する必要があります。
+cmux は `TMUX` が無く、`HERDR_ENV=1` でもなく、`HC_TERMINAL_ID` も無い場合にのみ、
+`CMUX_SURFACE_ID` を使って検証します。herdr の検証が外れても外側の cmux へキーを送りません。
+herdr の変数が漏れた cmux 端末でも、この条件により画面操作は無効になります。
+`TMUX` だけが残ってペインを特定できない場合も、他の端末へ入力しません。
+herdr / cmux の中で tmux を使うと tmux として動きます。
+herdr の TUI 版では実行可能な `HERDR_BIN_PATH` を優先し、無ければ `PATH` の `herdr` を使います。
+アプリ版では `hc` が `PATH` に必要です。宛先はローカル ID のみで、TUI 版は `w1:p1` のように
+`w` / `p` の後が英数字、アプリ版は `t1c` のように `t` の後が小文字英数字の形式を受け付けます。
+表示名には TUI 版の workspace ラベル（取得できなければ `HERDR_WORKSPACE_ID`）、アプリ版の `labels.where` を使います。
+herdr / hc / cmux の CLI 呼び出しは各 2 秒で打ち切ります。
+herdr の完了通知は Claude Code / Codex の個別通知です。Antigravity CLI の完了通知は
+session 集計が必要なため、herdr では承認中継のみ対応します。
 cmux CLI は `CMUX_BUNDLED_CLI_PATH`、`PATH`、macOS の標準インストール先の順に探します。
 
 その他の端末の「承認待ち」は、Claude Code が数秒待って発行する `permission_prompt` を使います。
@@ -85,6 +99,7 @@ handler を直接並べる旧形式は `setup.sh` の再実行で置き換わり
 | 起動環境 | Antigravity CLI の承認 |
 |---|---|
 | tmux | コマンド承認画面の4選択肢を転送し、選択番号1文字で回答 |
+| herdr（TUI / アプリ） | 同じ4選択肢を転送し、呼び出し元のペイン・端末に回答 |
 | cmux（tmux を使わず直接起動） | 同じ4選択肢を転送し、呼び出し元の surface に回答 |
 | その他 | 中継・通知なし。端末で回答 |
 

@@ -148,7 +148,7 @@ elif [ "$HOOK_EVENT" = "permission_prompt" ]; then
   # Screen transports already relay this request through permission-request.sh.
   case "$TERM_BACKEND" in
     tmux) [ -n "$TERM_TARGET_ID" ] && exit 0 ;;
-    cmux) term_capture >/dev/null && exit 0 ;;
+    cmux|herdr|hc) term_capture >/dev/null && exit 0 ;;
   esac
   HOOK_LOG_AGENT=${AGENT:-claude}
   hook_log notify_only permission_prompt

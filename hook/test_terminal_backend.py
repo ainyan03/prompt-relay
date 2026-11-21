@@ -17,7 +17,7 @@ HOOK_DIR = Path(__file__).resolve().parent
 @pytest.fixture
 def terminal_env(tmp_path):
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('PROMPT_RELAY_', 'CMUX_', 'TMUX'))
+           if not key.startswith(('PROMPT_RELAY_', 'CMUX_', 'TMUX', 'HERDR_', 'HC_'))
            or key in ('PROMPT_RELAY_RUNTIME_DIR', 'PROMPT_RELAY_LOG')}
     env.update({
         'PATH': f'{tmp_path}:{env["PATH"]}',
@@ -51,7 +51,23 @@ if os.environ.get('CLI_SLEEP'):
     import time
     time.sleep(5)
 if os.environ.get('CLI_FAIL'): sys.exit(1)
-if 'read-screen' in args or 'capture-pane' in args:
+backend = Path(sys.argv[0]).name
+if os.environ.get('FAIL_BACKEND') == backend: sys.exit(1)
+if backend in ('herdr', 'hc') and ('process-info' in args or args[0] == 'get'):
+    if os.environ.get('BAD_JSON'): print('not json'); sys.exit(0)
+    after = Path(os.environ['RESPONSE_SEEN']).exists()
+    if after and os.environ.get('PANE_QUERY_FAIL_AFTER_RESPONSE'): sys.exit(1)
+    pid = os.environ.get('PANE_PID_AFTER_RESPONSE' if after else 'PANE_PID', os.environ.get('PANE_PID', '424242'))
+    pid = int(pid) if pid.isdigit() else pid
+    data = {'result': {'process_info': {'shell_pid': pid}}} if backend == 'herdr' else {
+        'pid': pid, 'state': os.environ.get('HC_STATE', 'live'),
+        'labels': {'where': os.environ.get('WORKSPACE_TITLE', 'team / 1')}}
+    print(json.dumps(data))
+elif args[:2] == ['workspace', 'get']:
+    if os.environ.get('NAME_FAIL'): sys.exit(1)
+    print(json.dumps({'result': {'workspace': {'label': os.environ.get('WORKSPACE_TITLE', 'team')}}}))
+elif 'read-screen' in args or 'capture-pane' in args or 'read' in args:
+    if os.environ.get('READ_FAIL'): sys.exit(1)
     if os.environ.get('READ_FAIL_AFTER_RESPONSE') and Path(os.environ['RESPONSE_SEEN']).exists(): sys.exit(1)
     final = Path(os.environ['CALLS'] + '.final-failures')
     remaining = int(final.read_text()) if final.exists() else int(os.environ.get('FINAL_READ_FAILURES', '0'))
@@ -70,8 +86,9 @@ if 'read-screen' in args or 'capture-pane' in args:
         print('working')
         sys.exit(0)
     history = os.environ.get('HISTORY_PREFIX', '') if '-S' in args or '--lines' in args else ''
-    print('answered' if Path(os.environ['SENT']).exists() else history + Path(os.environ['SCREEN']).read_text())
-elif 'send' in args or 'send-key' in args or 'send-keys' in args:
+    suffix = os.environ.get('HISTORY_SUFFIX', '') if '--lines' in args else ''
+    print('answered' if Path(os.environ['SENT']).exists() else history + Path(os.environ['SCREEN']).read_text() + suffix)
+elif 'send' in args or 'send-key' in args or 'send-keys' in args or 'keys' in args:
     if os.environ.get('SEND_FAIL'): sys.exit(1)
     Path(os.environ['SENT']).touch()
 elif 'display-message' in args:
@@ -98,7 +115,7 @@ elif 'list-pane-surfaces' in args:
     if os.environ.get('SECOND_PANE_FAIL') and pane == 'pane-2': sys.exit(1)
     print(json.dumps({'surfaces': [{'id': ('SURFACE-' if os.environ.get('UPPER_IDS') else 'surface-') + pane[-1]}]}))
 '''
-    for name in ('tmux', 'cmux'):
+    for name in ('tmux', 'cmux', 'herdr', 'hc'):
         path = tmp_path / name
         path.write_text(fake)
         path.chmod(0o755)
@@ -140,8 +157,13 @@ elif any(arg.endswith('/cancel') for arg in args):
 import os, sys
 from pathlib import Path
 with open(os.environ['CALLS'] + '.ps', 'a') as stream:
-    stream.write('snapshot\\n')
+    stream.write('tty\\n' if sys.argv[1:3] == ['-o', 'tty='] else 'snapshot\\n')
 if os.environ.get('PS_FAIL'): sys.exit(1)
+if sys.argv[1:3] == ['-o', 'tty=']:
+    if os.environ.get('TTY_QUERY_FAIL'): sys.exit(1)
+    after = Path(os.environ['RESPONSE_SEEN']).exists()
+    print(os.environ.get('PANE_TTY_AFTER_RESPONSE' if after else 'PANE_TTY', os.environ.get('PANE_TTY', '/dev/ttys001')))
+    sys.exit(0)
 assert sys.argv[1:] == ['-axo', 'pid=,ppid=,tty=,comm=']
 print(os.environ['TEST_HOOK_PID'], 424242, os.environ.get('HOOK_TTY', 'ttys001'), '/bin/bash')
 print(os.environ.get('PS_ANCESTORS', '424242 1 ' + os.environ.get('ANCESTOR_TTY', 'ttys001') + ' ' + os.environ.get('ANCESTOR_COMM', '/bin/bash')))

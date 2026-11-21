@@ -52,33 +52,52 @@ if [ -n "$SERVER_URL_2" ]; then
   fi
 fi
 
-# Prefer tmux: cmux variables can survive inside a nested tmux session.
-# Detection uses only environment variables, never a running server's focus.
 TERM_BACKEND=none
 TERM_REASON=no_environment
-if [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
-  TERM_BACKEND=tmux
-elif [ -z "$TMUX" ] && [ -n "$CMUX_SURFACE_ID" ]; then
-  TERM_BACKEND=cmux
-fi
+
+# Bound reads, ownership queries, and key sends to two seconds per CLI call.
+terminal_cli() {
+  /usr/bin/env python3 "$(dirname "${BASH_SOURCE[0]}")/idle_state.py" "terminal-$1" "${@:2}" 2>/dev/null
+}
+
+term_query_owner() {
+  local pane_pid pane_tty
+  pane_pid=$(terminal_cli owner "$TERM_BACKEND" "$TERM_ENDPOINT") || return 1
+  pane_tty=$(ps -o tty= -p "$pane_pid" 2>/dev/null) || return 1
+  read -r pane_tty <<< "$pane_tty"
+  case "$pane_tty" in ''|'??'|'?'|-) return 1 ;; esac
+  printf '%s %s\n' "$pane_pid" "${pane_tty#/dev/}"
+}
 
 # A daemon inherits its launcher's environment: TMUX_PANE may name a different
 # caller's pane. Shared servers lack a controlling terminal; interactive agents
 # have one. Check executable names and TTYs without depending on launch arguments.
-# Pane PID/TTY matching is the primary tmux guard; codex name checking is supplementary.
+# Pane PID/TTY matching guards tmux and herdr; codex name checking is supplementary.
 TERM_PANE_PID=""
 TERM_PANE_TTY=""
+TERM_PS_READY=""
+TERM_PS_FAILED=""
+TERM_PS_SNAPSHOT=""
 term_verify_ancestry() {
-  local snapshot pid ppid tty executable current=$$ pane_pid="" pane_tty="" pane_info first_tty="" matched="" seen=" "
+  local pid ppid tty executable current=$$ pane_pid="" pane_tty="" pane_info first_tty="" matched="" seen=" "
   local -a parents ttys executables
+  TERM_REASON=invalid_endpoint
+  case "$TERM_BACKEND" in
+    herdr) [[ "$TERM_ENDPOINT" =~ ^w[0-9A-Za-z]+:p[0-9A-Za-z]+$ ]] || return 1 ;;
+    hc) [[ "$TERM_ENDPOINT" =~ ^t[0-9a-z]+$ ]] || return 1 ;;
+  esac
   TERM_REASON=ps_failed
-  snapshot=$(ps -axo pid=,ppid=,tty=,comm= 2>/dev/null) || return 1
+  if [ "$TERM_PS_READY" != yes ]; then
+    TERM_PS_READY=yes
+    TERM_PS_SNAPSHOT=$(ps -axo pid=,ppid=,tty=,comm= 2>/dev/null) || TERM_PS_FAILED=yes
+  fi
+  [ "$TERM_PS_FAILED" != yes ] || return 1
   while read -r pid ppid tty executable; do
     [[ "$pid" =~ ^[0-9]+$ && "$ppid" =~ ^[0-9]+$ ]] || continue
     parents[$pid]=$ppid
     ttys[$pid]=$tty
     executables[$pid]=$executable
-  done <<< "$snapshot"
+  done <<< "$TERM_PS_SNAPSHOT"
   if [ "$TERM_BACKEND" = tmux ]; then
     TERM_REASON=pane_query_failed
     pane_info=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_pid} #{pane_tty}' 2>/dev/null) || return 1
@@ -88,6 +107,10 @@ term_verify_ancestry() {
     TERM_REASON=missing_pane_tty
     [ -n "$pane_tty" ] || return 1
     pane_tty=${pane_tty#/dev/}
+  elif [ "$TERM_BACKEND" = herdr ] || [ "$TERM_BACKEND" = hc ]; then
+    TERM_REASON="${TERM_BACKEND}_query_failed"
+    pane_info=$(term_query_owner) || return 1
+    read -r pane_pid pane_tty <<< "$pane_info"
   fi
   while [ "$current" != 1 ]; do
     TERM_REASON=ancestor_missing
@@ -98,7 +121,7 @@ term_verify_ancestry() {
       '') return 1 ;;
       *) [ -n "$first_tty" ] || first_tty=${ttys[$current]#/dev/} ;;
     esac
-    if [ "$TERM_BACKEND" = tmux ]; then
+    if [ "$TERM_BACKEND" != cmux ]; then
       [ "$current" = "$pane_pid" ] && matched=yes
     fi
     ppid=${parents[$current]}
@@ -115,8 +138,31 @@ term_verify_ancestry() {
   TERM_PANE_TTY=$pane_tty
   TERM_REASON=verified
 }
-if [ "$TERM_BACKEND" != none ] && ! term_verify_ancestry; then
-  TERM_BACKEND=none
+TERM_ENDPOINT=""
+# Prefer the inner terminal, then transports that bind a pane to an ancestor PID.
+# Failed tmux validation may try herdr/hc: PID and TTY bind them to this caller.
+if [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
+  TERM_BACKEND=tmux
+  term_verify_ancestry || TERM_BACKEND=none
+fi
+if [ "$TERM_BACKEND" = none ] && { [ -z "$TMUX" ] || [ -n "$TMUX_PANE" ]; }; then
+  for candidate in herdr hc cmux; do
+    case "$candidate" in
+      herdr)
+        [ "$HERDR_ENV" = 1 ] || continue
+        TERM_ENDPOINT=$HERDR_PANE_ID ;;
+      hc)
+        [ -n "$HC_TERMINAL_ID" ] || continue
+        TERM_ENDPOINT=$HC_TERMINAL_ID ;;
+      cmux)
+        # cmux cannot bind a surface to a PID; never fall back outside herdr/hc.
+        [ -z "$TMUX" ] && [ "$HERDR_ENV" != 1 ] && [ -z "$HC_TERMINAL_ID" ] &&
+          [ -n "$CMUX_SURFACE_ID" ] || continue ;;
+    esac
+    TERM_BACKEND=$candidate
+    term_verify_ancestry && break
+    TERM_BACKEND=none
+  done
 fi
 
 HOSTNAME_SHORT=$(hostname -s)
@@ -139,10 +185,14 @@ case "$TERM_BACKEND" in
     TERM_TARGET="cmux:${CMUX_SURFACE_ID}"
     TERM_TARGET_ID="${HOSTNAME_SHORT}:${TERM_TARGET}"
     ;;
+  herdr|hc)
+    TERM_TARGET="${TERM_BACKEND}:${TERM_ENDPOINT}"
+    TERM_TARGET_ID="${HOSTNAME_SHORT}:${TERM_TARGET}"
+    ;;
 esac
 DISPLAY_HOST="${HOSTNAME_SHORT}${TERM_NAME:+:${TERM_NAME}}"
 
-# visible and joined read only the viewport; cmux history reads the last 200 lines.
+# visible and joined read only the viewport; non-tmux history reads 200 lines.
 term_capture() {
   case "$TERM_BACKEND" in
     tmux)
@@ -159,12 +209,33 @@ term_capture() {
         cmux_cli read-screen --surface "$CMUX_SURFACE_ID" 2>/dev/null
       fi
       ;;
+    herdr)
+      if [ "${1:-visible}" = history ]; then
+        terminal_cli run herdr pane read "$TERM_ENDPOINT" --source recent --lines 200
+      else
+        terminal_cli run herdr pane read "$TERM_ENDPOINT" --source visible
+      fi
+      ;;
+    hc)
+      if [ "${1:-visible}" = history ]; then
+        local content
+        content=$(terminal_cli run hc read "$TERM_ENDPOINT" --lines 200) || return 1
+        # While the program is busy or blocked, hc returns only the screen and
+        # appends a notice line; drop it so the prompt footer stays the last line.
+        case "${content##*$'\n'}" in
+          '[hc] incomplete:'*) content=${content%$'\n'*} ;;
+        esac
+        printf '%s\n' "$content"
+      else
+        terminal_cli run hc read "$TERM_ENDPOINT"
+      fi
+      ;;
     *) return 1 ;;
   esac
 }
 
 term_send() {
-  local pane_info pane_pid pane_tty rc key_kind=other
+  local pane_info pane_pid pane_tty rc key key_kind=other
   case "$TERM_BACKEND" in
     tmux)
       # A reused pane must not receive keys for its previous owner's request.
@@ -189,6 +260,24 @@ term_send() {
         *) cmux_cli send --force --surface "$CMUX_SURFACE_ID" "$1" 2>/dev/null ;;
       esac
       ;;
+    herdr|hc)
+      pane_info=$(term_query_owner) || {
+        hook_log send_cancelled "${TERM_BACKEND}_query_failed"; return 1;
+      }
+      read -r pane_pid pane_tty <<< "$pane_info"
+      [ -n "$TERM_PANE_PID" ] && [ "$pane_pid" = "$TERM_PANE_PID" ] || {
+        hook_log send_cancelled pane_pid_changed; return 1;
+      }
+      [ -n "$TERM_PANE_TTY" ] && [ "$pane_tty" = "$TERM_PANE_TTY" ] || {
+        hook_log send_cancelled pane_tty_changed; return 1;
+      }
+      case "$1" in Escape) key=esc ;; Enter) key=enter ;; *) key=$1 ;; esac
+      if [ "$TERM_BACKEND" = herdr ]; then
+        terminal_cli run herdr pane send-keys "$TERM_ENDPOINT" "$key"
+      else
+        terminal_cli run hc keys "$TERM_ENDPOINT" "$key"
+      fi
+      ;;
     *) hook_log send_cancelled no_transport; return 1 ;;
   esac
   rc=$?
@@ -208,6 +297,8 @@ cmux_cli() {
 term_display_host() {
   if [ "$TERM_BACKEND" = cmux ] && [ -n "$CMUX_WORKSPACE_ID" ]; then
     TERM_NAME=$(/usr/bin/env python3 "$(dirname "${BASH_SOURCE[0]}")/idle_state.py" cmux-name "$CMUX_WORKSPACE_ID" 2>/dev/null)
+  elif [ "$TERM_BACKEND" = herdr ] || [ "$TERM_BACKEND" = hc ]; then
+    TERM_NAME=$(terminal_cli name "$TERM_BACKEND" "$TERM_ENDPOINT")
   fi
   DISPLAY_HOST="${HOSTNAME_SHORT}${TERM_NAME:+:${TERM_NAME}}"
 }
